@@ -193,7 +193,8 @@ for item in COCO_CATEGORIES_Unseen:
 COCO_CATEGORIES_ALL = COCO_CATEGORIES_Seen + COCO_CATEGORIES_Unseen
 
 if __name__ == "__main__":
-    dataset_dir = Path(os.getenv("DETECTRON2_DATASETS", "datasets")) / "coco" / "coco_stuff"
+    # dataset_dir = Path(os.getenv("DETECTRON2_DATASETS", "datasets")) / "coco" / "coco_stuff"
+    dataset_dir  = Path("/mnt/server14_hard1/msson/datasets/zs3_datasets") / "coco" / "coco_stuff"
 
     id_map = {}
     for cat in COCO_CATEGORIES_ALL:

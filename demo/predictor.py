@@ -36,6 +36,33 @@ class VisualizationDemo(object):
         else:
             self.predictor = DefaultPredictor(cfg)
 
+    def get_features(self, image):
+        """
+        Args:
+            image (np.ndarray): an image of shape (H, W, C) (in BGR order).
+                This is the format used by OpenCV.
+        Returns:
+            predictions (dict): the output of the model.
+            vis_output (VisImage): the visualized image output.
+        """
+        x_cls, image_features, text_features = self.predictor(image, tsne=True)
+        # x_cls, text_features = self.predictor(image)
+        
+        return x_cls, image_features, text_features
+    
+    def get_mask_embedding(self, image):
+        """
+        Args:
+            image (np.ndarray): an image of shape (H, W, C) (in BGR order).
+                This is the format used by OpenCV.
+        Returns:
+            predictions (dict): the output of the model.
+            vis_output (VisImage): the visualized image output.
+        """
+        mask_pred_results, cls_score = self.predictor(image, mask_vis=True)
+        
+        return mask_pred_results, cls_score
+
     def run_on_image(self, image):
         """
         Args:

@@ -860,19 +860,19 @@ for cat in ADE20K_SEM_SEG_SEEN_CATEGORIES:
     name = cat['name']
     train_categories.append(name)
 
-with open(r'datasets/ADE20K_2021_17_01/ADE20K_572_pure_class.json', 'w') as f_out:
+with open(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/ADE20K_2021_17_01/ADE20K_572_pure_class.json', 'w') as f_out:
     json.dump(train_categories, f_out)
 
 for cat in ADE20K_SEM_SEG_UNSEEN_CATEGORIES:
     name = cat['name']
     test_categories.append(name)
 
-with open(r'datasets/ADE20K_2021_17_01/ADE20K_275_pure_class.json', 'w') as f_out:
+with open(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/ADE20K_2021_17_01/ADE20K_275_pure_class.json', 'w') as f_out:
     json.dump(test_categories, f_out)
 
 for cat in ADE20K_SEM_SEG_FULL_CATEGORIES:
     name = cat['name']
     all_categories.append(name)
 
-with open(r'datasets/ADE20K_2021_17_01/ADE20K_847_pure_class.json', 'w') as f_out:
+with open(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/ADE20K_2021_17_01/ADE20K_847_pure_class.json', 'w') as f_out:
     json.dump(all_categories, f_out)

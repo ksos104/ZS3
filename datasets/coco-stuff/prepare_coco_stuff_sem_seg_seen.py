@@ -186,7 +186,8 @@ def worker(file_tuple):
     Image.fromarray(output).save(output_file)
 
 if __name__ == "__main__":
-    dataset_dir = Path(os.getenv("DETECTRON2_DATASETS", "datasets")) / "coco" / "coco_stuff"
+    # dataset_dir = Path(os.getenv("DETECTRON2_DATASETS", "datasets")) / "coco" / "coco_stuff"
+    dataset_dir  = Path("/mnt/server14_hard1/msson/datasets/zs3_datasets") / "coco" / "coco_stuff"
 
     pool = Pool(32)
 

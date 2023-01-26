@@ -223,7 +223,7 @@ class TransformerZeroshotPredictor(nn.Module):
 
         return ret
 
-    def forward(self, x, mask_features, images_tensor=None, ori_sizes=None):
+    def forward(self, x, mask_features, images_tensor=None, ori_sizes=None, tsne=False, mask_vis=False):
         assert images_tensor == None
 
         pos = self.pe_layer(x)
@@ -245,6 +245,9 @@ class TransformerZeroshotPredictor(nn.Module):
             outputs_class = torch.cat((cls_score, bg_score), -1)
             out = {"pred_logits": outputs_class[-1]}
 
+            if mask_vis:
+                return cls_score[-1]
+
         else:
             out = {}
 
@@ -262,6 +265,9 @@ class TransformerZeroshotPredictor(nn.Module):
             mask_embed = self.mask_embed(hs[-1])
             outputs_seg_masks = torch.einsum("bqc,bchw->bqhw", mask_embed, mask_features)
             out["pred_masks"] = outputs_seg_masks
+
+        if tsne:
+            return x_cls[-1], self.text_features_test
 
         return out
 

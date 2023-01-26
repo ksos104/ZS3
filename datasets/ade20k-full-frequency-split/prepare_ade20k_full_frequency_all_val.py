@@ -875,7 +875,8 @@ def loadAde20K(file):
     return {"img_name": file, "segm_name": fileseg, "class_mask": ObjectClassMasks}
 
 if __name__ == "__main__":
-    dataset_dir = Path(os.getenv("DETECTRON2_DATASETS", "datasets"))
+    # dataset_dir = Path(os.getenv("DETECTRON2_DATASETS", "datasets"))
+    dataset_dir = Path("/mnt/server14_hard1/msson/datasets/zs3_datasets")
     index_file = dataset_dir / "ADE20K_2021_17_01" / "index_ade20k.pkl"
     with open(index_file, "rb") as f:
         index_ade20k = pkl.load(f)

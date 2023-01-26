@@ -4,8 +4,8 @@ MODEL:
   SEM_SEG_HEAD:
     NUM_CLASSES: 20
     CLIP_CLASSIFICATION: True
-    TRAIN_CLASS_JSON: "datasets/VOCZERO/seen_classnames.json"
-    TEST_CLASS_JSON: "datasets/VOCZERO/all_classnames.json"
+    TRAIN_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/seen_classnames.json"
+    TEST_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/all_classnames.json"
   MASK_FORMER:
 #    GZERO_CALIBRATE: 0.7
 #    GZERO_CALIBRATE: 0.1

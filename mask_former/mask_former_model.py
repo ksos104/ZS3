@@ -185,7 +185,7 @@ class MaskFormer(nn.Module):
     def device(self):
         return self.pixel_mean.device
 
-    def forward(self, batched_inputs):
+    def forward(self, batched_inputs, tsne=False, mask_vis=False):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper`.
@@ -232,7 +232,14 @@ class MaskFormer(nn.Module):
 
         features = self.backbone(images.tensor)
 
-        outputs = self.sem_seg_head(features, None, ori_sizes)
+        if tsne:
+            x_cls, text_features = self.sem_seg_head(features, None, ori_sizes, tsne, mask_vis)
+            outputs = self.sem_seg_head(features, None, ori_sizes, tsne=False)
+        elif mask_vis:
+            cls_score = self.sem_seg_head(features, None, ori_sizes, tsne, mask_vis)
+            outputs = self.sem_seg_head(features, None, ori_sizes, tsne=False)
+        else:
+            outputs = self.sem_seg_head(features, None, ori_sizes, tsne)
         if self.training:
             # mask classification target
             if "instances" in batched_inputs[0]:
@@ -254,6 +261,8 @@ class MaskFormer(nn.Module):
         else:
             mask_cls_results = outputs["pred_logits"]
             mask_pred_results = outputs["pred_masks"]
+            if mask_vis:
+                return mask_pred_results, cls_score
             # upsample masks
             mask_pred_results = F.interpolate(
                 mask_pred_results,
@@ -382,6 +391,9 @@ class MaskFormer(nn.Module):
                                                                * torch.pow(logits_per_image, lambda_balance)
                         else:
                             mask_cls_result = logits_per_image
+
+                    if tsne:
+                        return x_cls, image_features, text_features
 
                     ######################################################################################
                 if self.sem_seg_postprocess_before_inference:

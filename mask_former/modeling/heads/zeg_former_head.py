@@ -82,11 +82,11 @@ class ZegFormerHead(nn.Module):
             ),
         }
 
-    def forward(self, features, images_tensor=None, ori_sizes=None):
+    def forward(self, features, images_tensor=None, ori_sizes=None, tsne=False, mask_vis=False):
 
-        return self.layers(features, images_tensor, ori_sizes)
+        return self.layers(features, images_tensor, ori_sizes, tsne, mask_vis)
 
-    def layers(self, features, images_tensor=None, ori_sizes=None):
+    def layers(self, features, images_tensor=None, ori_sizes=None, tsne=False, mask_vis=False):
         mask_features, transformer_encoder_features = self.pixel_decoder.forward_features(features)
         if self.transformer_in_feature == "transformer_encoder":
             assert (
@@ -94,5 +94,12 @@ class ZegFormerHead(nn.Module):
             ), "Please use the TransformerEncoderPixelDecoder."
             predictions = self.predictor(transformer_encoder_features, mask_features, images_tensor, ori_sizes)
         else:
-            predictions = self.predictor(features[self.transformer_in_feature], mask_features, images_tensor, ori_sizes)
+            if tsne:
+                x_cls, text_features = self.predictor(features[self.transformer_in_feature], mask_features, images_tensor, ori_sizes, tsne, mask_vis)
+                return x_cls, text_features
+            elif mask_vis:
+                cls_score = self.predictor(features[self.transformer_in_feature], mask_features, images_tensor, ori_sizes, tsne, mask_vis)
+                return cls_score
+            else:
+                predictions = self.predictor(features[self.transformer_in_feature], mask_features, images_tensor, ori_sizes, tsne)
         return predictions

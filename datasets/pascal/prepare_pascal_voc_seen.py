@@ -37,7 +37,8 @@ for index, item in enumerate(categories_unseen):
     item["trainId"] = index
 
 if __name__ == '__main__':
-    dataset_dir = Path(os.getenv("DETECTRON2_DATASETS", "datasets")) / "VOCZERO"
+    # dataset_dir = Path(os.getenv("DETECTRON2_DATASETS", "datasets")) / "VOCZERO"
+    dataset_dir = Path("/mnt/server14_hard1/msson/datasets/zs3_datasets") / "VOCZERO"
 
     id_map = {}
     for cat in categories_seen:

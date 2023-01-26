@@ -182,9 +182,9 @@ for item in COCO_CATEGORIES:
 
 COCO_CATEGORIES_Seen = []
 COCO_CATEGORIES_unseen = []
-seen_cls = np.load(r'datasets/coco/coco_stuff/split/seen_cls.npy')
-val_cls = np.load(r'datasets/coco/coco_stuff/split/val_cls.npy')
-novel_cls = np.load(r'datasets/coco/coco_stuff/split/novel_cls.npy')
+seen_cls = np.load(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/coco/coco_stuff/split/seen_cls.npy')
+val_cls = np.load(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/coco/coco_stuff/split/val_cls.npy')
+novel_cls = np.load(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/coco/coco_stuff/split/novel_cls.npy')
 
 train_cls = seen_cls.tolist() + val_cls.tolist()
 
@@ -210,13 +210,13 @@ for item in COCO_CATEGORIES:
         COCO_CATEGORIES_unseen.append(tmp)
         count_test = count_test + 1
 
-with open(r'datasets/coco/coco_stuff/split/seen_classnames.json', 'w') as f_out:
+with open(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/coco/coco_stuff/split/seen_classnames.json', 'w') as f_out:
     json.dump(seen_classnames, f_out)
 
-with open(r'datasets/coco/coco_stuff/split/unseen_classnames.json', 'w') as f_out:
+with open(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/coco/coco_stuff/split/unseen_classnames.json', 'w') as f_out:
     json.dump(unseen_classnames, f_out)
 
-with open(r'datasets/coco/coco_stuff/split/all_classnames.json', 'w') as f_out:
+with open(r'/mnt/server14_hard1/msson/datasets/zs3_datasets/coco/coco_stuff/split/all_classnames.json', 'w') as f_out:
     json.dump(seen_classnames + unseen_classnames, f_out)
 
 # print(COCO_CATEGORIES_Seen)

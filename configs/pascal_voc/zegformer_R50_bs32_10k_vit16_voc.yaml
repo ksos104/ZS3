@@ -11,8 +11,8 @@ MODEL:
     CONVS_DIM: 256
     MASK_DIM: 256
     NORM: "GN"
-    TRAIN_CLASS_JSON: "datasets/VOCZERO/seen_classnames.json"
-    TEST_CLASS_JSON: "datasets/VOCZERO/seen_classnames.json"
+    TRAIN_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/seen_classnames.json"
+    TEST_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/seen_classnames.json"
     CLIP_PRETRAINED: "ViT-B/16"
   MASK_FORMER:
     TRANSFORMER_IN_FEATURE: "res5"

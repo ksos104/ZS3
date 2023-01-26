@@ -11,8 +11,8 @@ MODEL:
     CONVS_DIM: 256
     MASK_DIM: 256
     NORM: "GN"
-    TRAIN_CLASS_JSON: "datasets/ADE20K_2021_17_01/ADE20K_572_pure_class.json"
-    TEST_CLASS_JSON: "datasets/ADE20K_2021_17_01/ADE20K_847_pure_class.json"
+    TRAIN_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/ADE20K_2021_17_01/ADE20K_572_pure_class.json"
+    TEST_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/ADE20K_2021_17_01/ADE20K_847_pure_class.json"
     CLIP_PRETRAINED: "ViT-B/16"
     CLIP_CLASSIFICATION: True
   MASK_FORMER:
