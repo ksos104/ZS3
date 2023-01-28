@@ -234,12 +234,11 @@ class MaskFormer(nn.Module):
 
         if tsne:
             x_cls, text_features = self.sem_seg_head(features, None, ori_sizes, tsne, mask_vis)
-            outputs = self.sem_seg_head(features, None, ori_sizes, tsne=False)
         elif mask_vis:
             cls_score = self.sem_seg_head(features, None, ori_sizes, tsne, mask_vis)
-            outputs = self.sem_seg_head(features, None, ori_sizes, tsne=False)
-        else:
-            outputs = self.sem_seg_head(features, None, ori_sizes, tsne)
+        
+        outputs = self.sem_seg_head(features, None, ori_sizes, tsne)
+        
         if self.training:
             # mask classification target
             if "instances" in batched_inputs[0]:
@@ -261,8 +260,6 @@ class MaskFormer(nn.Module):
         else:
             mask_cls_results = outputs["pred_logits"]
             mask_pred_results = outputs["pred_masks"]
-            if mask_vis:
-                return mask_pred_results, cls_score
             # upsample masks
             mask_pred_results = F.interpolate(
                 mask_pred_results,
@@ -368,6 +365,10 @@ class MaskFormer(nn.Module):
                         logits_per_image = logit_scale.half() * image_features @ self.sem_seg_head.predictor.text_features_test_clip.t().half()
                         logits_per_image = logits_per_image.float()
                         logits_per_image = torch.cat((logits_per_image, mask_cls_result[:, -1].unsqueeze(1)), 1)
+                        
+                        if mask_vis:
+                            return mask_pred_results, cls_score, logits_per_image
+                        
                         assert not (self.ensembling and self.ensembling_all_cls)
                         if self.ensembling:
                             # note that in this branch, average the seen score of clip

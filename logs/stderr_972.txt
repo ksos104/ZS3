@@ -1,0 +1,35 @@
+Loading config configs/pascal_voc/Base-VOC-20.yaml with yaml.unsafe_load. Your machine may be at risk if the file contains malicious content.
+/home/cilab10/anaconda3/envs/msson_zs3/lib/python3.8/site-packages/torchvision/transforms/transforms.py:329: UserWarning: Argument 'interpolation' of type int is deprecated since 0.13 and will be removed in 0.15. Please use InterpolationMode enum.
+  warnings.warn(
+Traceback (most recent call last):
+  File "train_net.py", line 490, in <module>
+    launch(
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/engine/launch.py", line 84, in launch
+    main_func(*args)
+  File "train_net.py", line 482, in main
+    trainer = Trainer(cfg)
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/engine/defaults.py", line 385, in __init__
+    data_loader = self.build_train_loader(cfg)
+  File "train_net.py", line 328, in build_train_loader
+    return build_detection_train_loader(cfg, mapper=mapper)
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/config/config.py", line 207, in wrapped
+    explicit_args = _get_args_from_config(from_config, *args, **kwargs)
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/config/config.py", line 245, in _get_args_from_config
+    ret = from_config_func(*args, **kwargs)
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/data/build.py", line 344, in _train_loader_from_config
+    dataset = get_detection_dataset_dicts(
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/data/build.py", line 241, in get_detection_dataset_dicts
+    dataset_dicts = [DatasetCatalog.get(dataset_name) for dataset_name in names]
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/data/build.py", line 241, in <listcomp>
+    dataset_dicts = [DatasetCatalog.get(dataset_name) for dataset_name in names]
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/data/catalog.py", line 58, in get
+    return f()
+  File "/mnt/server10_hard0/msson/ZS3/mask_former/data/datasets/register_pascal_voc.py", line 85, in <lambda>
+    name, lambda x=image_dir, y=gt_dir: load_sem_seg(y, x, gt_ext="png", image_ext="jpg")
+  File "/mnt/server10_hard0/msson/ZS3/detectron2/detectron2/data/datasets/coco.py", line 266, in load_sem_seg
+    (os.path.join(image_root, f) for f in PathManager.ls(image_root) if f.endswith(image_ext)),
+  File "/home/cilab10/anaconda3/envs/msson_zs3/lib/python3.8/site-packages/iopath/common/file_io.py", line 1294, in ls
+    return self.__get_path_handler(path)._ls(path, **kwargs)
+  File "/home/cilab10/anaconda3/envs/msson_zs3/lib/python3.8/site-packages/iopath/common/file_io.py", line 714, in _ls
+    return os.listdir(self._get_path_with_cwd(path))
+FileNotFoundError: [Errno 2] No such file or directory: 'datasets/VOCZERO/images/train'

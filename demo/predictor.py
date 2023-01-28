@@ -59,9 +59,9 @@ class VisualizationDemo(object):
             predictions (dict): the output of the model.
             vis_output (VisImage): the visualized image output.
         """
-        mask_pred_results, cls_score = self.predictor(image, mask_vis=True)
+        mask_pred_results, cls_score, pred_masks = self.predictor(image, mask_vis=True)
         
-        return mask_pred_results, cls_score
+        return mask_pred_results, cls_score, pred_masks
 
     def run_on_image(self, image):
         """

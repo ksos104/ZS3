@@ -152,7 +152,7 @@ if __name__ == "__main__":
             # use PIL, to be consistent with evaluation
             img = read_image(path, format="BGR")
             start_time = time.time()
-            mask_pred_results, cls_score = demo.get_mask_embedding(img)
+            mask_pred_results, cls_score, logits_per_image = demo.get_mask_embedding(img)
             
             import torch
             import torchvision
@@ -171,15 +171,30 @@ if __name__ == "__main__":
             
             img = torchvision.transforms.ToTensor()(img.copy())
             alpha = 0.5
-            for i in range(100):
-                confidence = cls_score[0,i,:].max(dim=-1)[0].sigmoid().item()
-                if confidence <= 0.5:
-                    continue
-                mask_result = trans(mask_results[:,i,...])
-                blended = alpha*mask_result + (1-alpha)*img
+            # for i in range(100):
+            #     # confidence = cls_score[0,i,:].max(dim=-1)[0].sigmoid().item()
+            #     confidence = logits_per_image[i,:].max(dim=-1)[0].sigmoid().item()
+            #     # if confidence <= 0.5:           ## confidence score 0.5 초과만 visualization
+            #     #     continue
+            #     mask_result = trans(mask_results[:,i,...])
+            #     blended = alpha*mask_result + (1-alpha)*img
                 
-                print("image_path: ", path)
-                print(class_names['pascal'][cls_score[0,i,:].argmax(dim=-1)])
-                print("confidence: ", confidence)
-                # plt.imshow(blended.permute(1,2,0))
-                # plt.show()
+            #     print("image_path: ", path)
+            #     # print(class_names['pascal'][cls_score[0,i,:].argmax(dim=-1)])
+            #     print(class_names['pascal'][logits_per_image[i,:].argmax(dim=-1)])
+            #     print("confidence: ", confidence)
+            #     plt.imshow(blended.permute(1,2,0))
+            #     plt.show()
+            
+            ## Check all masks at once
+            for i in range(100):
+                mask_result = trans(mask_results[:,i,...])
+                if i == 0 :
+                    blended = mask_result
+                else:
+                    blended += mask_result
+                
+            blended = torch.where(blended>0, torch.tensor([255]), torch.tensor([0]))        ## binary로 visualization
+            print("image_path: ", path)
+            # plt.imshow(blended.permute(1,2,0))
+            # plt.show()
