@@ -1,4 +1,4 @@
-_BASE_: zegformer_R50_bs32_10k_vit16_voc.yaml
+_BASE_: zeg2former_R50_bs32_10k_vit16_voc.yaml
 MODEL:
 #  BACKBONE:
 #    NAME: "build_resnet_deeplab_backbone"
@@ -11,12 +11,9 @@ MODEL:
     OUT_FEATURES: ["res2", "res3", "res4", "res5"]
     # NORM: "SyncBN"
     RES5_MULTI_GRID: [1, 1, 1]  # not used
+
+#SEED: 28057409
+
 DATALOADER:
   FILTER_EMPTY_ANNOTATIONS: True
-  NUM_WORKERS: 4
-SOLVER:
-  IMS_PER_BATCH: 32
-  BASE_LR: 0.0001
-  MAX_ITER: 30000
-TEST:
-  EVAL_PERIOD: 30000
+  NUM_WORKERS: 1

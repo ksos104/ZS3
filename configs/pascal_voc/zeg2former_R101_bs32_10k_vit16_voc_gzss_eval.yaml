@@ -1,4 +1,4 @@
-_BASE_: zegformer_R50_bs32_10k_vit16_voc.yaml
+_BASE_: zeg2former_R50_bs32_10k_vit16_voc.yaml
 MODEL:
 #  BACKBONE:
 #    NAME: "build_resnet_deeplab_backbone"

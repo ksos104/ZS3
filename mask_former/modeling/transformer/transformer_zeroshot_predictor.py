@@ -245,9 +245,6 @@ class TransformerZeroshotPredictor(nn.Module):
             outputs_class = torch.cat((cls_score, bg_score), -1)
             out = {"pred_logits": outputs_class[-1]}
 
-            if mask_vis:
-                return cls_score[-1]
-
         else:
             out = {}
 
@@ -268,6 +265,8 @@ class TransformerZeroshotPredictor(nn.Module):
 
         if tsne:
             return x_cls[-1], self.text_features_test
+        elif mask_vis:
+            return cls_score[-1]
 
         return out
 

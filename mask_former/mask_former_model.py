@@ -17,6 +17,8 @@ from .modeling.matcher import HungarianMatcher
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, transforms
 from mask_former.third_party import imagenet_templates
 
+import neptune.new as neptune
+
 @META_ARCH_REGISTRY.register()
 class MaskFormer(nn.Module):
     """
@@ -115,6 +117,13 @@ class MaskFormer(nn.Module):
                 unseen_indexes.append(self.metadata.stuff_classes.index(cls))
         self.seen_indexes = seen_indexes
         self.unseen_indexes = unseen_indexes
+           
+        self.use_npt = True 
+        if self.use_npt:
+            self.npt = neptune.init_run(
+                project="kaist-cilab/ZS3",
+                api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI4OTQ2MGY0Yi0zMTM2LTQ5ZmEtYjlmOS1lNmQxMTliOTE0MjkifQ==",
+            )
 
     @classmethod
     def from_config(cls, cfg):
@@ -234,12 +243,11 @@ class MaskFormer(nn.Module):
 
         if tsne:
             x_cls, text_features = self.sem_seg_head(features, None, ori_sizes, tsne, mask_vis)
-            outputs = self.sem_seg_head(features, None, ori_sizes, tsne=False)
         elif mask_vis:
             cls_score = self.sem_seg_head(features, None, ori_sizes, tsne, mask_vis)
-            outputs = self.sem_seg_head(features, None, ori_sizes, tsne=False)
-        else:
-            outputs = self.sem_seg_head(features, None, ori_sizes, tsne)
+        
+        outputs = self.sem_seg_head(features, None, ori_sizes, tsne)
+        
         if self.training:
             # mask classification target
             if "instances" in batched_inputs[0]:
@@ -256,13 +264,17 @@ class MaskFormer(nn.Module):
                 else:
                     # remove this loss if not specified in `weight_dict`
                     losses.pop(k)
+                
+            if self.use_npt:    
+                self.npt["train/loss_ce"].append(losses["loss_ce"])
+                self.npt["train/loss_mask"].append(losses["loss_mask"])
+                self.npt["train/loss_dice"].append(losses["loss_dice"])
+                self.npt["train/loss_total"].append(sum(losses.values()))
 
             return losses
         else:
             mask_cls_results = outputs["pred_logits"]
             mask_pred_results = outputs["pred_masks"]
-            if mask_vis:
-                return mask_pred_results, cls_score
             # upsample masks
             mask_pred_results = F.interpolate(
                 mask_pred_results,
@@ -368,6 +380,10 @@ class MaskFormer(nn.Module):
                         logits_per_image = logit_scale.half() * image_features @ self.sem_seg_head.predictor.text_features_test_clip.t().half()
                         logits_per_image = logits_per_image.float()
                         logits_per_image = torch.cat((logits_per_image, mask_cls_result[:, -1].unsqueeze(1)), 1)
+                        
+                        if mask_vis:
+                            return mask_pred_results, cls_score, logits_per_image
+                        
                         assert not (self.ensembling and self.ensembling_all_cls)
                         if self.ensembling:
                             # note that in this branch, average the seen score of clip

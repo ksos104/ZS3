@@ -155,6 +155,7 @@ if __name__ == "__main__":
             mask_pred_results, cls_score = demo.get_mask_embedding(img)
             cls_idx = cls_score.argmax(dim=-1).squeeze()
             # cls_score = cls_score / cls_score.norm(dim=-1, keepdim=True)
+
             
             import torch
             import torchvision
@@ -173,12 +174,28 @@ if __name__ == "__main__":
             
             img = torchvision.transforms.ToTensor()(img.copy())
             alpha = 0.5
+            # for i in range(100):
+            #     # confidence = cls_score[0,i,:].max(dim=-1)[0].sigmoid().item()
+            #     confidence = logits_per_image[i,:].max(dim=-1)[0].sigmoid().item()
+            #     # if confidence <= 0.5:           ## confidence score 0.5 초과만 visualization
+            #     #     continue
+            #     mask_result = trans(mask_results[:,i,...])
+            #     blended = alpha*mask_result + (1-alpha)*img
+                
+            #     print("image_path: ", path)
+            #     # print(class_names['pascal'][cls_score[0,i,:].argmax(dim=-1)])
+            #     print(class_names['pascal'][logits_per_image[i,:].argmax(dim=-1)])
+            #     print("confidence: ", confidence)
+            #     plt.imshow(blended.permute(1,2,0))
+            #     plt.show()
+            
+            ## Check all masks at once
             for i in range(100):
-                confidence = cls_score[0,i,:].max(dim=-1)[0].sigmoid().item()
-                if confidence <= 0.5:
-                    continue
                 mask_result = trans(mask_results[:,i,...])
-                blended = alpha*mask_result + (1-alpha)*img
+                if i == 0 :
+                    blended = mask_result
+                else:
+                    blended += mask_result
                 
                 print("image_path: ", path)
                 print(class_names['pascal'][cls_idx[i]])
