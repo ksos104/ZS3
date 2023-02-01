@@ -469,7 +469,8 @@ def register_all_coco_stuff_val_all(root):
         **meta,
     )
 
-_root = os.getenv("DETECTRON2_DATASETS", "datasets")
+# _root = os.getenv("DETECTRON2_DATASETS", "datasets")
+_root = "/mnt/server14_hard1/msson/datasets/zs3_datasets"
 register_all_coco_stuff_seen(_root)
 register_all_coco_stuff_unseen(_root)
 register_all_coco_stuff_val_all(_root)

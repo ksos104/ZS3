@@ -174,7 +174,8 @@ def register_voc_stuff_val_all(root):
         ignore_label=255,
         **meta,
     )
-_root = os.getenv("DETECTRON2_DATASETS", "datasets")
+# _root = os.getenv("DETECTRON2_DATASETS", "datasets")
+_root = "/mnt/server14_hard1/msson/datasets/zs3_datasets"
 register_pascal_voc_seen(_root)
 register_coco_stuff_val_unseen(_root)
 register_voc_stuff_val_all(_root)

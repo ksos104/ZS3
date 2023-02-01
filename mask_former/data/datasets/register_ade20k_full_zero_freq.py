@@ -999,7 +999,8 @@ def register_all_ade20k_full_seen_freq(root):
             ignore_label=65535,  # NOTE: gt is saved in 16-bit TIFF images
         )
 
-_root = os.getenv("DETECTRON2_DATASETS", "datasets")
+# _root = os.getenv("DETECTRON2_DATASETS", "datasets")
+_root = "/mnt/server14_hard1/msson/datasets/zs3_datasets"
 register_all_ade20k_full_val_all_freq(_root)
 register_all_ade20k_val_unseen_freq(_root)
 register_all_ade20k_full_seen_freq(_root)

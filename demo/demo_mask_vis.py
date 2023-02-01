@@ -125,16 +125,16 @@ def test_opencv_video_format(codec, file_ext):
 
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
-    # args = get_parser().parse_args()
+    args = get_parser().parse_args()
     
     import easydict
     
-    args = easydict.EasyDict({
-        "config_file": "./configs/pascal_voc/zegformer_R101_bs32_30k_vit16_voc_gzss_eval.yaml",
-        "input": ["/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/images/val/*.jpg"],
-        "opts": ["MODEL.WEIGHTS","./trained/given/zegformer_R101_bs32_10k_vit16_voc.pth"],
-        "output": None
-    })
+    # args = easydict.EasyDict({
+    #     "config_file": "./configs/pascal_voc/zegformer_R101_bs32_30k_vit16_voc_gzss_eval.yaml",
+    #     "input": ["/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/images/val/*.jpg"],
+    #     "opts": ["MODEL.WEIGHTS","./trained/given/zegformer_R101_bs32_10k_vit16_voc.pth"],
+    #     "output": None
+    # })
     
     setup_logger(name="fvcore")
     logger = setup_logger()
@@ -153,6 +153,8 @@ if __name__ == "__main__":
             img = read_image(path, format="BGR")
             start_time = time.time()
             mask_pred_results, cls_score = demo.get_mask_embedding(img)
+            cls_idx = cls_score.argmax(dim=-1).squeeze()
+            # cls_score = cls_score / cls_score.norm(dim=-1, keepdim=True)
             
             import torch
             import torchvision
@@ -179,7 +181,7 @@ if __name__ == "__main__":
                 blended = alpha*mask_result + (1-alpha)*img
                 
                 print("image_path: ", path)
-                print(class_names['pascal'][cls_score[0,i,:].argmax(dim=-1)])
+                print(class_names['pascal'][cls_idx[i]])
                 print("confidence: ", confidence)
                 # plt.imshow(blended.permute(1,2,0))
                 # plt.show()
