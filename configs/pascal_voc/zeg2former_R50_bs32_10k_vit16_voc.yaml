@@ -1,8 +1,8 @@
 _BASE_: Base-VOC-20.yaml
 MODEL:
-  META_ARCHITECTURE: "MaskFormer"
+  META_ARCHITECTURE: "Mask2Former"
   SEM_SEG_HEAD:
-    NAME: "ZegFormerHead"
+    NAME: "MaskFormerHead"
     IN_FEATURES: ["res2", "res3", "res4", "res5"]
     IGNORE_VALUE: 255
     NUM_CLASSES: 15
@@ -15,7 +15,8 @@ MODEL:
     TEST_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/seen_classnames.json"
     CLIP_PRETRAINED: "ViT-B/16"
   MASK_FORMER:
-    TRANSFORMER_IN_FEATURE: "res5"
+    # TRANSFORMER_IN_FEATURE: "res5"
+    TRANSFORMER_IN_FEATURE: "multi_scale_pixel_decoder"
     DEEP_SUPERVISION: True
     NO_OBJECT_WEIGHT: 0.1
     DICE_WEIGHT: 1.0

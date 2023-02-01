@@ -17,6 +17,8 @@ from .modeling.matcher import HungarianMatcher
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, transforms
 from mask_former.third_party import imagenet_templates
 
+import neptune.new as neptune
+
 @META_ARCH_REGISTRY.register()
 class MaskFormer(nn.Module):
     """
@@ -115,6 +117,13 @@ class MaskFormer(nn.Module):
                 unseen_indexes.append(self.metadata.stuff_classes.index(cls))
         self.seen_indexes = seen_indexes
         self.unseen_indexes = unseen_indexes
+           
+        self.use_npt = True 
+        if self.use_npt:
+            self.npt = neptune.init_run(
+                project="kaist-cilab/ZS3",
+                api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI4OTQ2MGY0Yi0zMTM2LTQ5ZmEtYjlmOS1lNmQxMTliOTE0MjkifQ==",
+            )
 
     @classmethod
     def from_config(cls, cfg):
@@ -255,6 +264,12 @@ class MaskFormer(nn.Module):
                 else:
                     # remove this loss if not specified in `weight_dict`
                     losses.pop(k)
+                
+            if self.use_npt:    
+                self.npt["train/loss_ce"].append(losses["loss_ce"])
+                self.npt["train/loss_mask"].append(losses["loss_mask"])
+                self.npt["train/loss_dice"].append(losses["loss_dice"])
+                self.npt["train/loss_total"].append(sum(losses.values()))
 
             return losses
         else:

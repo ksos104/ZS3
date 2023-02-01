@@ -242,6 +242,14 @@ from mask_former import (
     add_mask_former_config,
 )
 
+# # Mask2Former
+# from mask2former import (
+#     MaskFormerPanopticDatasetMapper,
+#     MaskFormerSemanticDatasetMapper,
+#     SemanticSegmentorWithTTA,
+#     add_maskformer2_config,
+# )
+
 
 class Trainer(DefaultTrainer):
     """
@@ -455,6 +463,7 @@ def setup(args):
     # for poly lr schedule
     add_deeplab_config(cfg)
     add_mask_former_config(cfg)
+    # add_maskformer2_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()

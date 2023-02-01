@@ -7,8 +7,8 @@
 #SBATCH -e logs/stderr_%j.txt
 #SBATCH --gres=gpu
 
-CUDA_VISIBLE_DEVICES=2
+CUDA_VISIBLE_DEVICES=3
 
 python train_net.py \
   --config-file configs/pascal_voc/zegformer_R101_bs32_10k_vit16_voc.yaml \
-  --num-gpus 1 SOLVER.IMS_PER_BATCH 2
+  --num-gpus 1 SOLVER.IMS_PER_BATCH 32 OUTPUT_DIR ./output_baseline_voc32_maskformer

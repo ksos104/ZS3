@@ -4,6 +4,9 @@ output
 instant_test_output
 inference_test_output
 detectron2/
+logs/
+output*
+.neptune
 
 
 *.png
