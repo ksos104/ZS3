@@ -29,6 +29,7 @@ MODEL:
     DEC_LAYERS: 6
     PRE_NORM: False
   PROMPT_ENSEMBLE_TYPE: "single"
+  # PROMPT_ENSEMBLE_TYPE: "topk3"
   # PROMPT_ENSEMBLE_TYPE: "imagenet_select"
 #SOLVER:
 #  AMP:

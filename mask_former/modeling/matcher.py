@@ -103,6 +103,11 @@ class HungarianMatcher(nn.Module):
             out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
             out_mask = outputs["pred_masks"][b]  # [num_queries, H_pred, W_pred]
 
+            openset_setting = False
+            openset_thres = 0.5
+            if openset_setting:
+                out_prob = torch.where(out_prob>openset_thres, out_prob, torch.tensor([0.]).cuda())
+
             tgt_ids = targets[b]["labels"]
             # gt masks are already padded when preparing target
             tgt_mask = targets[b]["masks"].to(out_mask)
@@ -124,7 +129,7 @@ class HungarianMatcher(nn.Module):
 
             # Compute the dice loss betwen masks
             cost_dice = batch_dice_loss(out_mask, tgt_mask)
-
+            
             # Final cost matrix
             C = (
                 self.cost_mask * cost_mask

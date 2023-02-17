@@ -1,0 +1,13 @@
+INPUT:
+  SIZE: (224, 224)
+  INTERPOLATION: "bicubic"
+  PIXEL_MEAN: [0.48145466, 0.4578275, 0.40821073]
+  PIXEL_STD: [0.26862954, 0.26130258, 0.27577711]
+  TRANSFORMS: ["random_resized_crop", "random_flip", "normalize"]
+
+TRAINER:
+  COOP:
+    N_CTX: 4
+    CTX_INIT: "a photo of a"
+    CSC: False                      # True or False
+    CLASS_TOKEN_POSITION: end    # end or middle

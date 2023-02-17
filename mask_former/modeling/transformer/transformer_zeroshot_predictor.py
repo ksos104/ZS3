@@ -16,6 +16,10 @@ from mask_former.third_party import imagenet_templates
 
 import numpy as np
 
+from transformers import AutoTokenizer, GPT2Tokenizer, AutoModelForMaskedLM
+import random
+from mask_former.third_party import dart, cocoop, coop
+
 class TransformerZeroshotPredictor(nn.Module):
     @configurable
     def __init__(
@@ -96,59 +100,133 @@ class TransformerZeroshotPredictor(nn.Module):
         else:
             self.projection_layer = nn.Linear(hidden_dim, 512)
 
-        if self.wordvec:
-            import pickle
-            with open(train_class_indexes_json, 'r') as f_in:
-                train_class_indexes = json.load(f_in)
-            with open(test_class_indexes_json, 'r') as f_in:
-                test_class_indexes = json.load(f_in)
-            class_emb = np.concatenate([pickle.load(open('datasets/coco/coco_stuff/word_vectors/fasttext.pkl', "rb")),
-                                        pickle.load(open('datasets/coco/coco_stuff/word_vectors/word2vec.pkl', "rb"))], axis=1)
-            text_features = torch.from_numpy(class_emb[np.asarray(train_class_indexes)]).to(device)
-            text_features_test = torch.from_numpy(class_emb[np.asarray(test_class_indexes)]).to(device)
-            self.text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            self.text_features_test = text_features_test / text_features_test.norm(dim=-1, keepdim=True)
-            self.text_features = self.text_features.float()
-            self.text_features_test = self.text_features_test.float()
-        else:
-            with torch.no_grad():
-                assert "A photo of" not in self.class_texts[0]
-                if self.prompt_ensemble_type == "imagenet_select":
-                    prompt_templates = imagenet_templates.IMAGENET_TEMPLATES_SELECT
-                elif self.prompt_ensemble_type == "imagenet":
-                    prompt_templates = imagenet_templates.IMAGENET_TEMPLATES
-                elif self.prompt_ensemble_type == "single":
-                    prompt_templates = ['A photo of a {} in the scene',]
-                else:
-                    raise NotImplementedError
-                prompt_templates_clip = imagenet_templates.IMAGENET_TEMPLATES_SELECT_CLIP
-                def zeroshot_classifier(classnames, templates, clip_modelp):
-                    with torch.no_grad():
-                        zeroshot_weights = []
-                        for classname in classnames:
-                            if ', ' in classname:
-                                classname_splits = classname.split(', ')
-                                texts = []
-                                for template in templates:
-                                    for cls_split in classname_splits:
-                                        texts.append(template.format(cls_split))
-                            else:
-                                texts = [template.format(classname) for template in templates]  # format with class
-                            texts = clip.tokenize(texts).cuda()  # tokenize, shape: [48, 77]
-                            class_embeddings = clip_modelp.encode_text(texts)  # embed with text encoder
-                            class_embeddings /= class_embeddings.norm(dim=-1, keepdim=True)
-                            class_embedding = class_embeddings.mean(dim=0)
-                            class_embedding /= class_embedding.norm()
-                            zeroshot_weights.append(class_embedding)
-                        zeroshot_weights = torch.stack(zeroshot_weights, dim=1).cuda()
-                    return zeroshot_weights
-                ## train features
-                # shape of text_features: [156, 512]
-                self.text_features = zeroshot_classifier(self.class_texts, prompt_templates, clip_model).permute(1, 0).float()
-                self.text_features_test = zeroshot_classifier(self.test_class_texts, prompt_templates, clip_model).permute(1, 0).float()
+        self.mode = "cocoop"           ## [dart, coop, cocoop, default]
+        
+        if self.mode == 'dart':
+            reader = dart.Reader
+            # reader.PATTERN = ["[text_a]", "It was", "[mask]", "."]
+            # reader.PATTERN = ["[text_a]", "A photo of a", "[mask]", "in the scene."]
+            reader.PATTERN = ["[mask]", "[text_a]", "[mask]"]
+            reader.LABELS = ['0','1','2','3','4','5','6','7','8','9','10','11','12','13','14']
+            reader.VERBALIZERS = self.class_texts
+            
+            tokenizer = AutoTokenizer.from_pretrained('albert-xxlarge-v2')
+            model = AutoModelForMaskedLM.from_pretrained('albert-xxlarge-v2')
+            pet = dart.DiffPET(tokenizer, reader, model, device)
+        elif self.mode == 'coop':
+            from detectron2.config import get_cfg
+            cfg = get_cfg()
+            cfg.set_new_allowed(True)
+            cfg.merge_from_file("configs/coop.yaml")
+            
+            # if cfg.TRAINER.COOP.PREC == "fp32" or cfg.TRAINER.COOP.PREC == "amp":
+            #     # CLIP's default precision is fp16
+            #     clip_model.float()
 
-                self.text_features_clip = zeroshot_classifier(self.class_texts, prompt_templates_clip, clip_model).permute(1, 0).float()
-                self.text_features_test_clip = zeroshot_classifier(self.test_class_texts, prompt_templates_clip, clip_model).permute(1, 0).float()
+            print("Building custom CLIP")
+            self.coop_model = coop.CustomCLIP(cfg, self.class_texts, clip_model)
+            self.test_coop_model = coop.CustomCLIP(cfg, self.test_class_texts, clip_model)
+
+            print("Turning off gradients in both the image and the text encoder")
+            for name, param in self.coop_model.named_parameters():
+                if "prompt_learner" not in name:
+                    param.requires_grad_(False)
+            
+            self.text_features = self.coop_model().float()
+            self.text_features_test = self.test_coop_model().float()
+            
+            prompt_templates_clip = imagenet_templates.IMAGENET_TEMPLATES_SELECT_CLIP
+            self.text_features_clip = self.zeroshot_classifier(self.class_texts, prompt_templates_clip, clip_model).permute(1, 0).float()
+            self.text_features_test_clip = self.zeroshot_classifier(self.test_class_texts, prompt_templates_clip, clip_model).permute(1, 0).float()
+        elif self.mode == 'cocoop':
+            from detectron2.config import get_cfg
+            cfg = get_cfg()
+            cfg.set_new_allowed(True)
+            cfg.merge_from_file("configs/cocoop.yaml")
+            
+            if cfg.TRAINER.COCOOP.PREC == "fp32" or cfg.TRAINER.COCOOP.PREC == "amp":
+                # CLIP's default precision is fp16
+                clip_model.float()
+
+            print("Building custom CLIP")
+            self.cocoop_model = cocoop.CustomCLIP(cfg, self.class_texts, clip_model)
+            self.test_cocoop_model = cocoop.CustomCLIP(cfg, self.test_class_texts, clip_model)
+
+            print("Turning off gradients in both the image and the text encoder")
+            name_to_update = "prompt_learner"
+            
+            for name, param in self.cocoop_model.named_parameters():
+                if name_to_update not in name:
+                    param.requires_grad_(False)
+                    
+            enabled = set()
+            for name, param in self.cocoop_model.named_parameters():
+                if param.requires_grad:
+                    enabled.add(name)
+            print(f"Parameters to be updated: {enabled}")
+            
+            self.text_features = None
+            self.text_features_test = None
+            self.text_features_clip = None
+            self.text_features_test_clip = None
+        else:
+            if self.wordvec:
+                import pickle
+                with open(train_class_indexes_json, 'r') as f_in:
+                    train_class_indexes = json.load(f_in)
+                with open(test_class_indexes_json, 'r') as f_in:
+                    test_class_indexes = json.load(f_in)
+                class_emb = np.concatenate([pickle.load(open('datasets/coco/coco_stuff/word_vectors/fasttext.pkl', "rb")),
+                                            pickle.load(open('datasets/coco/coco_stuff/word_vectors/word2vec.pkl', "rb"))], axis=1)
+                text_features = torch.from_numpy(class_emb[np.asarray(train_class_indexes)]).to(device)
+                text_features_test = torch.from_numpy(class_emb[np.asarray(test_class_indexes)]).to(device)
+                self.text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                self.text_features_test = text_features_test / text_features_test.norm(dim=-1, keepdim=True)
+                self.text_features = self.text_features.float()
+                self.text_features_test = self.text_features_test.float()
+            else:
+                with torch.no_grad():
+                    assert "A photo of" not in self.class_texts[0]
+                    if self.prompt_ensemble_type == "imagenet_select":
+                        prompt_templates = imagenet_templates.IMAGENET_TEMPLATES_SELECT
+                    elif self.prompt_ensemble_type == "imagenet":
+                        prompt_templates = imagenet_templates.IMAGENET_TEMPLATES
+                    elif self.prompt_ensemble_type == "single":
+                        prompt_templates = ['A photo of a {} in the scene',]
+                    elif self.prompt_ensemble_type == "topk3":
+                        prompt_templates = ['A photo of a {} in the scene',]
+                        # prompt_templates = ['A photo of a {} in the scene. Similar with {} and {}']
+                        # prompt_templates = ['A photo of a {} in the scene. Not {} and {}']
+                    else:
+                        raise NotImplementedError
+                    prompt_templates_clip = imagenet_templates.IMAGENET_TEMPLATES_SELECT_CLIP
+                    
+                    clip_features = self.zeroshot_classifier(self.class_texts, prompt_templates, clip_model).permute(1, 0).float()
+                    clip_sim = clip_features.clone().detach() @ clip_features.clone().detach().t()
+                    
+                    ## class_texts extension
+                    if self.prompt_ensemble_type == "topk3":
+                        # prompt_templates = ['A photo of a {} in the scene', 'Similar with {}', 'Similar with {}']
+                        prompt_templates = ['A photo of a {} in the scene', 'Not {}', 'Not {}']
+                        
+                        k = 3
+                        clip_sim.topk(k).values
+                        clip_sim.topk(k).indices
+                        
+                        ext_class_texts = []
+                        for i in range(clip_sim.shape[0]):
+                            texts_list = []
+                            for j in range(k):
+                                texts_list.append(str(self.class_texts[clip_sim.topk(k).indices[i][j]]))
+                            texts = ', '.join(texts_list)
+                            ext_class_texts.append(texts)
+                        self.class_texts = ext_class_texts
+                            
+                    self.text_features = self.zeroshot_classifier(self.class_texts, prompt_templates, clip_model).permute(1, 0).float()
+                    self.text_features_test = self.zeroshot_classifier(self.test_class_texts, prompt_templates, clip_model).permute(1, 0).float()
+
+                    self.text_features_clip = self.zeroshot_classifier(self.class_texts, prompt_templates_clip, clip_model).permute(1, 0).float()
+                    self.text_features_test_clip = self.zeroshot_classifier(self.test_class_texts, prompt_templates_clip, clip_model).permute(1, 0).float()
 
         self.logit_scale = nn.Parameter(torch.tensor([np.log(1/temperature)]).float())
         self.logit_scale.requires_grad = False
@@ -188,6 +266,28 @@ class TransformerZeroshotPredictor(nn.Module):
 
         # output FFNs
         self.mask_embed = MLP(hidden_dim, hidden_dim, mask_dim, 3)
+
+    @classmethod
+    def zeroshot_classifier(self, classnames, templates, clip_modelp):
+        with torch.no_grad():
+            zeroshot_weights = []
+            for classname in classnames:
+                if ', ' in classname:
+                    classname_splits = classname.split(', ')
+                    texts = []
+                    for template in templates:
+                        for cls_split in classname_splits:
+                            texts.append(template.format(cls_split))
+                else:
+                    texts = [template.format(classname) for template in templates]  # format with class
+                texts = clip.tokenize(texts).cuda()  # tokenize, shape: [48, 77]
+                class_embeddings = clip_modelp.encode_text(texts)  # embed with text encoder
+                class_embeddings /= class_embeddings.norm(dim=-1, keepdim=True)
+                class_embedding = class_embeddings.mean(dim=0)
+                class_embedding /= class_embedding.norm()
+                zeroshot_weights.append(class_embedding)
+            zeroshot_weights = torch.stack(zeroshot_weights, dim=1).cuda()
+        return zeroshot_weights
 
     @classmethod
     def from_config(cls, cfg, in_channels, mask_classification):
@@ -231,20 +331,84 @@ class TransformerZeroshotPredictor(nn.Module):
         mask = None
         hs, memory = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos)
 
+        openset_setting = False
         if self.mask_classification:
-            x_cls = self.projection_layer(hs)
-            # TODO: check if it is l2 norm
-            x_cls = x_cls / x_cls.norm(dim=-1, keepdim=True)
-            logit_scale = self.logit_scale.exp()
-            if self.training:
-                cls_score = logit_scale * x_cls @ self.text_features.clone().detach().t()
-            else:
-                cls_score = logit_scale * x_cls @ self.text_features_test.clone().detach().t()
+            if not openset_setting:
+                if self.mode == 'cocoop':
+                    x_cls = self.projection_layer(hs)
+                    
+                    if self.training:
+                        zeroshot_weights = self.cocoop_model(x_cls)
+                    else:
+                        zeroshot_weights = self.test_cocoop_model(x_cls)
+                    zeroshot_weights = zeroshot_weights.type(x_cls.dtype)
+                    zeroshot_weights = zeroshot_weights.permute(0,2,1)
+                    
+                    self.text_features = zeroshot_weights.clone()
+                    self.text_features_test = zeroshot_weights.clone()
+                    self.text_features_clip = zeroshot_weights.clone()
+                    self.text_features_test_clip = zeroshot_weights.clone()
+                    
+                    # TODO: check if it is l2 norm
+                    x_cls = x_cls / x_cls.norm(dim=-1, keepdim=True)
+                    logit_scale = self.logit_scale.exp()
+                    if self.training:
+                        cls_score = logit_scale * x_cls @ self.text_features.clone().detach()
+                    else:
+                        cls_score = logit_scale * x_cls @ self.text_features_test.clone().detach()
 
-            bg_score = logit_scale * x_cls @ self.bg_feature.t()
-            outputs_class = torch.cat((cls_score, bg_score), -1)
-            out = {"pred_logits": outputs_class[-1]}
+                    bg_score = logit_scale * x_cls @ self.bg_feature.t()
+                    outputs_class = torch.cat((cls_score, bg_score), -1)
+                    out = {"pred_logits": outputs_class[-1]}
+                    
+                    out["semantic_vector"] = x_cls[-1]
+                elif self.mode == 'coop':
+                    x_cls = self.projection_layer(hs)
+                                        
+                    # TODO: check if it is l2 norm
+                    x_cls = x_cls / x_cls.norm(dim=-1, keepdim=True)
+                    logit_scale = self.logit_scale.exp()
+                    if self.training:
+                        cls_score = logit_scale * x_cls @ self.text_features.clone().detach().t()
+                    else:
+                        cls_score = logit_scale * x_cls @ self.text_features_test.clone().detach().t()
 
+                    bg_score = logit_scale * x_cls @ self.bg_feature.t()
+                    outputs_class = torch.cat((cls_score, bg_score), -1)
+                    out = {"pred_logits": outputs_class[-1]}
+                    
+                    out["semantic_vector"] = x_cls[-1]
+                else:
+                    x_cls = self.projection_layer(hs)
+                    # TODO: check if it is l2 norm
+                    x_cls = x_cls / x_cls.norm(dim=-1, keepdim=True)
+                    logit_scale = self.logit_scale.exp()
+                    if self.training:
+                        cls_score = logit_scale * x_cls @ self.text_features.clone().detach().t()
+                    else:
+                        cls_score = logit_scale * x_cls @ self.text_features_test.clone().detach().t()
+
+                    bg_score = logit_scale * x_cls @ self.bg_feature.t()
+                    outputs_class = torch.cat((cls_score, bg_score), -1)
+                    out = {"pred_logits": outputs_class[-1]}
+                    
+                    out["semantic_vector"] = x_cls[-1]
+            elif openset_setting:
+                x_cls = self.projection_layer(hs)
+                # TODO: check if it is l2 norm
+                x_cls = x_cls / x_cls.norm(dim=-1, keepdim=True)
+                logit_scale = self.logit_scale.exp()
+                if self.training:
+                    cls_score = logit_scale * x_cls @ self.text_features.clone().detach().t()
+                else:
+                    cls_score = logit_scale * x_cls @ self.text_features_test.clone().detach().t()
+
+                # bg_score = logit_scale * x_cls @ self.bg_feature.t()
+                # outputs_class = torch.cat((cls_score, bg_score), -1)
+                outputs_class = cls_score
+                out = {"pred_logits": outputs_class[-1]}
+                
+                out["semantic_vector"] = x_cls[-1]
         else:
             out = {}
 

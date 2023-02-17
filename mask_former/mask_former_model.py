@@ -118,12 +118,14 @@ class MaskFormer(nn.Module):
         self.seen_indexes = seen_indexes
         self.unseen_indexes = unseen_indexes
            
-        self.use_npt = True 
+        self.use_npt = True
         if self.use_npt:
-            self.npt = neptune.init_run(
-                project="kaist-cilab/ZS3",
-                api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI4OTQ2MGY0Yi0zMTM2LTQ5ZmEtYjlmOS1lNmQxMTliOTE0MjkifQ==",
-            )
+            self.rank = torch.distributed.get_rank()
+            if self.rank==0:
+                self.npt = neptune.init_run(
+                    project="kaist-cilab/ZS3",
+                    api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI4OTQ2MGY0Yi0zMTM2LTQ5ZmEtYjlmOS1lNmQxMTliOTE0MjkifQ==",
+                )
 
     @classmethod
     def from_config(cls, cfg):
@@ -246,7 +248,7 @@ class MaskFormer(nn.Module):
         elif mask_vis:
             cls_score = self.sem_seg_head(features, None, ori_sizes, tsne, mask_vis)
         
-        outputs = self.sem_seg_head(features, None, ori_sizes, tsne)
+        outputs = self.sem_seg_head(features, None, ori_sizes)
         
         if self.training:
             # mask classification target
@@ -264,8 +266,35 @@ class MaskFormer(nn.Module):
                 else:
                     # remove this loss if not specified in `weight_dict`
                     losses.pop(k)
+            
+            ## Semantic contrastive learning
+            semsim = False
+            if semsim:
+                import random
+                n_iter = 20
+                idx_list = [x for x in range(100)]
                 
-            if self.use_npt:    
+                loss_sem_sim = 0.
+                for bs in range(outputs["semantic_vector"].shape[0]):
+                    random.shuffle(idx_list)
+                    for idx in range(n_iter):
+                        sem_sim = outputs["semantic_vector"][bs][idx].unsqueeze(dim=0) @ outputs["semantic_vector"][bs].t()
+                        
+                        # ## using distance gap
+                        # temp = sem_sim.clone().detach()
+                        # sim_min = temp.min()
+                        # temp[0,idx] -= temp[0,idx]
+                        # sim_max = temp.max()
+                        # gap = sim_max - sim_min                    
+                        # sem_sim = 0.1*gap - sem_sim
+                        # loss_sem_sim += (torch.sum(sem_sim)+(1-0.1*gap))
+                        
+                        ## distance as loss
+                        loss_sem_sim += (torch.sum(sem_sim)-1)
+                
+                losses["loss_sem_sim"] = (n_iter/100)*loss_sem_sim
+            
+            if self.use_npt and self.rank==0:    
                 self.npt["train/loss_ce"].append(losses["loss_ce"])
                 self.npt["train/loss_mask"].append(losses["loss_mask"])
                 self.npt["train/loss_dice"].append(losses["loss_dice"])
@@ -378,6 +407,8 @@ class MaskFormer(nn.Module):
                         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                         logit_scale = self.sem_seg_head.predictor.clip_model.logit_scale.exp()
                         logits_per_image = logit_scale.half() * image_features @ self.sem_seg_head.predictor.text_features_test_clip.t().half()
+                        # logits_per_image = logit_scale.half() * image_features @ self.sem_seg_head.predictor.text_features_test_clip.half()
+                        logits_per_image = logits_per_image.squeeze(0)
                         logits_per_image = logits_per_image.float()
                         logits_per_image = torch.cat((logits_per_image, mask_cls_result[:, -1].unsqueeze(1)), 1)
                         
