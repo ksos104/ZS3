@@ -229,7 +229,7 @@ class SemSegGzeroEvaluator(DatasetEvaluator):
 
 
 # MaskFormer
-from mask_former import (
+from dino_clip import (
     DETRPanopticDatasetMapper,
     MaskFormerPanopticDatasetMapper,
     MaskFormerSemanticDatasetMapper,

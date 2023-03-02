@@ -23,7 +23,7 @@ from detectron2.data.detection_utils import read_image
 from detectron2.projects.deeplab import add_deeplab_config
 from detectron2.utils.logger import setup_logger
 
-from mask_former import add_mask_former_config
+from dino_clip import add_mask_former_config
 # from mask2former import add_maskformer2_config
 from predictor import VisualizationDemo
 
