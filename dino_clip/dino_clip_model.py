@@ -488,8 +488,8 @@ class DINO_CLIP(nn.Module):
             
             input_images = input_images * (1-th_attn_imgs)
             
-            masked_features = th_attn.permute(0,2,1) * features
-            mask_output = self.head(masked_features)
+            masked_attn = th_attn * attentions
+            mask_output = self.head(masked_attn)
             mask_output_list.append(mask_output)
         
         th_attns = torch.concat(th_attn_list, dim=1)
