@@ -234,21 +234,13 @@ class SemSegGzeroEvaluator(DatasetEvaluator):
 
 
 # MaskFormer
-from mask_former import (
+from dino_clip import (
     DETRPanopticDatasetMapper,
     MaskFormerPanopticDatasetMapper,
     MaskFormerSemanticDatasetMapper,
     SemanticSegmentorWithTTA,
     add_mask_former_config,
 )
-
-# # Mask2Former
-# from mask2former import (
-#     MaskFormerPanopticDatasetMapper,
-#     MaskFormerSemanticDatasetMapper,
-#     SemanticSegmentorWithTTA,
-#     add_maskformer2_config,
-# )
 
 
 class Trainer(DefaultTrainer):
@@ -379,7 +371,8 @@ class Trainer(DefaultTrainer):
                     continue
                 memo.add(value)
                 hyperparams = copy.copy(defaults)
-                if "backbone" in module_name:
+                # if "backbone" in module_name:
+                if "model" in module_name:
                     hyperparams["lr"] = hyperparams["lr"] * cfg.SOLVER.BACKBONE_MULTIPLIER
                 # for deformable detr
                 if ("reference_points" in module_name) or ("sampling_offsets" in module_name):
