@@ -3,7 +3,8 @@ MODEL:
   META_ARCHITECTURE: "DINO_CLIP"
   SEM_SEG_HEAD:
     IGNORE_VALUE: 255
-    NUM_CLASSES: 15
+    NUM_CLASSES: 20
+    CLIP_CLASSIFICATION: True
     LOSS_WEIGHT: 1.0
     NORM: "GN"
     TRAIN_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/seen_classnames.json"
@@ -27,6 +28,8 @@ DATALOADER:
   FILTER_EMPTY_ANNOTATIONS: True
   NUM_WORKERS: 1
 
+DATASETS:
+ TEST: ("pascal_voc_val_all_sem_seg",)
   
 DINO:
   ARCH: 'vit_small'

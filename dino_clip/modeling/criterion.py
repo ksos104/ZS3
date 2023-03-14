@@ -91,6 +91,8 @@ class SetCriterion(nn.Module):
         """
         assert "pred_logits" in outputs
         src_logits = outputs["pred_logits"]
+        src_logits = src_logits.contiguous().view(src_logits.shape[0], outputs['pred_masks'].shape[1], -1, self.num_classes+1)
+        src_logits = src_logits.mean(dim=2)
 
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])

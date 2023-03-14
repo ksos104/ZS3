@@ -88,20 +88,25 @@ class HungarianMatcher(nn.Module):
     @torch.no_grad()
     def memory_efficient_forward(self, outputs, targets):
         """More memory-friendly matching"""
-        bs, num_queries = outputs["pred_logits"].shape[:2]
+        ## Reshape outputs['pred_logits]
+        # outputs['pred_logits'] = outputs["pred_logits"].view(outputs['pred_masks'].shape[0], outputs['pred_masks'].shape[1], -1, outputs['pred_logits'].shape[-1])
+        # outputs['pred_logits'] = outputs['pred_logits'][:,:,0,:]
+        
+        # bs, num_queries = outputs["pred_logits"].shape[:2]
+        bs, num_queries = outputs["pred_masks"].shape[:2]
 
         # Work out the mask padding size
         masks = [v["masks"] for v in targets]
         h_max = max([m.shape[1] for m in masks])
         w_max = max([m.shape[2] for m in masks])
 
-        indices = []
+        indices = []        
 
         # Iterate through batch size
         for b in range(bs):
 
             out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
-            out_mask = outputs["pred_masks"][b]  # [num_queries, H_pred, W_pred]
+            out_mask = outputs["pred_masks"][b]  # [num_queries, H_pred, W_pred]            
 
             openset_setting = False
             openset_thres = 0.5
@@ -111,11 +116,22 @@ class HungarianMatcher(nn.Module):
             tgt_ids = targets[b]["labels"]
             # gt masks are already padded when preparing target
             tgt_mask = targets[b]["masks"].to(out_mask)
+            
+            
+            ## Print
+            print("pred_logits: ", outputs['pred_logits'].argmax(-1).unique())
+            print("tgt_idx: ", tgt_ids)
+            
 
             # Compute the classification cost. Contrary to the loss, we don't use the NLL,
             # but approximate it in 1 - proba[target class].
             # The 1 is a constant that doesn't change the matching, it can be ommitted.
             cost_class = -out_prob[:, tgt_ids]
+            if cost_class.shape[-1] == 0:
+                cost_class = cost_class.reshape(num_queries, -1)
+            else:
+                cost_class = cost_class.contiguous().view(num_queries, -1, cost_class.shape[-1])
+                cost_class = cost_class.mean(dim=1)
 
             # Downsample gt masks to save memory
             tgt_mask = F.interpolate(tgt_mask[:, None], size=out_mask.shape[-2:], mode="nearest")
