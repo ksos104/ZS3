@@ -260,7 +260,7 @@ class DINO_CLIP(nn.Module):
             self.clip_preprocess = clip_preprocess        
         
         ## Neptune init
-        self.use_npt = True
+        self.use_npt = False
         self.rank = 0
         if torch.distributed.is_initialized():
             self.rank = torch.distributed.get_rank()
@@ -449,6 +449,8 @@ class DINO_CLIP(nn.Module):
 
         images = ImageList.from_tensors(images, self.size_divisibility)
         
+        
+        
         input_images = F.interpolate(images.tensor, self.image_size)
         w, h = input_images.shape[2] - input_images.shape[2] % self.patch_size, input_images.shape[3] - input_images.shape[3] % self.patch_size
         input_images = input_images[:, :, :w, :h]
@@ -480,8 +482,8 @@ class DINO_CLIP(nn.Module):
             # we keep only the output patch attention
             attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
             
-            # attentions = attentions.sum(1).unsqueeze(1)
-            attentions = attentions[:,0,:].unsqueeze(1)
+            attentions = attentions.sum(1).unsqueeze(1)
+            # attentions = attentions[:,0,:].unsqueeze(1)
             attentions_list.append(attentions)
             nh = 1
 
@@ -553,7 +555,7 @@ class DINO_CLIP(nn.Module):
 
             bg_score = logit_scale * mask_outputs @ self.bg_feature.t()
             outputs_class = torch.cat((cls_score, bg_score), -1)
-            outputs = {"pred_logits": outputs_class.reshape(bs, -1, outputs_class.shape[-1])}
+            outputs = {"pred_logits": outputs_class}
         else:
             outputs = {}
             
@@ -710,7 +712,9 @@ class DINO_CLIP(nn.Module):
                         
                         ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
                         logits_per_image = logits_per_image.unsqueeze(1)
-                        logits_per_image = logits_per_image.repeat(1,3600,1).view(-1,self.num_classes)                        
+                        logits_per_image = logits_per_image.repeat(1,3600,1).view(-1,self.num_classes)
+                        
+                        mask_cls_result = mask_cls_result.reshape(-1, mask_cls_result.shape[-1])
                         
                         logits_per_image = torch.cat((logits_per_image, mask_cls_result[:, -1].unsqueeze(1)), 1)
                         

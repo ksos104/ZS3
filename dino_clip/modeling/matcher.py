@@ -106,31 +106,20 @@ class HungarianMatcher(nn.Module):
         for b in range(bs):
 
             out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
-            out_mask = outputs["pred_masks"][b]  # [num_queries, H_pred, W_pred]            
-
-            openset_setting = False
-            openset_thres = 0.5
-            if openset_setting:
-                out_prob = torch.where(out_prob>openset_thres, out_prob, torch.tensor([0.]).cuda())
+            out_mask = outputs["pred_masks"][b]  # [num_queries, H_pred, W_pred]
 
             tgt_ids = targets[b]["labels"]
             # gt masks are already padded when preparing target
             tgt_mask = targets[b]["masks"].to(out_mask)
-            
-            
-            ## Print
-            print("pred_logits: ", outputs['pred_logits'].argmax(-1).unique())
-            print("tgt_idx: ", tgt_ids)
-            
 
             # Compute the classification cost. Contrary to the loss, we don't use the NLL,
             # but approximate it in 1 - proba[target class].
             # The 1 is a constant that doesn't change the matching, it can be ommitted.
-            cost_class = -out_prob[:, tgt_ids]
+            cost_class = -out_prob[:, :, tgt_ids]
             if cost_class.shape[-1] == 0:
                 cost_class = cost_class.reshape(num_queries, -1)
             else:
-                cost_class = cost_class.contiguous().view(num_queries, -1, cost_class.shape[-1])
+                # cost_class = cost_class.contiguous().view(num_queries, -1, cost_class.shape[-1])
                 cost_class = cost_class.mean(dim=1)
 
             # Downsample gt masks to save memory

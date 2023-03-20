@@ -91,24 +91,25 @@ class SetCriterion(nn.Module):
         """
         assert "pred_logits" in outputs
         src_logits = outputs["pred_logits"]
-        src_logits = src_logits.contiguous().view(src_logits.shape[0], outputs['pred_masks'].shape[1], -1, self.num_classes+1)
-        src_logits = src_logits.mean(dim=2)
+        # src_logits = src_logits.mean(dim=2)
+            
 
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         
-        openset_setting = False
-        if openset_setting:
-            target_classes = torch.full(
-                src_logits.shape[:2], self.num_classes-1, dtype=torch.int64, device=src_logits.device
-            )
-        else:
-            target_classes = torch.full(
+        target_classes = torch.full(
             src_logits.shape[:2], self.num_classes, dtype=torch.int64, device=src_logits.device
-            )
+        )
         target_classes[idx] = target_classes_o
+        
+        
+        ## Print
+        print("pred_logits: ", src_logits.argmax(-1).unique())
+        print("tgt_idx: ", target_classes_o)
+        
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+        # loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+        loss_ce = F.cross_entropy(src_logits.reshape(2,-1,16).transpose(1,2), target_classes.unsqueeze(-1).expand(2,10,3600).reshape(2,-1))
         losses = {"loss_ce": loss_ce}
         return losses
 
