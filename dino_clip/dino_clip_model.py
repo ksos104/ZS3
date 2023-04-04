@@ -260,7 +260,7 @@ class DINO_CLIP(nn.Module):
             self.clip_preprocess = clip_preprocess        
         
         ## Neptune init
-        self.use_npt = False
+        self.use_npt = True
         self.rank = 0
         if torch.distributed.is_initialized():
             self.rank = torch.distributed.get_rank()
@@ -464,36 +464,183 @@ class DINO_CLIP(nn.Module):
         attentions_list = []
         threshold = self.threshold
         
-        '''
-            features.shape = [bs, 3600, 384]
-        '''
-        if threshold is not None:
-            bs = images.tensor.shape[0]
-            remains = torch.ones((bs,1,3600)).to(self.device)
-            th_attn = torch.zeros((bs,1,3600)).to(self.device)
-        for i in range(self.n_iter):
-            features, attentions = self.model.get_last_selfattention(input_images)
-            features = features[:,1:,:]
-            features_list.append(features)
-
-            bs = attentions.shape[0]
-            nh = attentions.shape[1] # number of head
-            
-            # we keep only the output patch attention
-            attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
-            
-            attentions = attentions.sum(1).unsqueeze(1)
-            # attentions = attentions[:,0,:].unsqueeze(1)
-            attentions_list.append(attentions)
-            nh = 1
-
+        cls_mode = 'patch-wise'      ## 'patch-wise' / 'mask-wise'
+        
+        if cls_mode == 'mask-wise':
+            '''
+                mask-wise classification
+                features.shape = []
+            '''
+            cls_token_list = []
             if threshold is not None:
+                bs = images.tensor.shape[0]
+                remains = torch.ones((bs,1,3600)).to(self.device)
+                th_attn = torch.zeros((bs,1,3600)).to(self.device)
+                
+            for i in range(self.n_iter):
+                cls_tokens, features, attentions = self.model.get_attn_and_cls(input_images)
+                features = features[:,1:,:]
+                features_list.append(features)
+                cls_token_list.append(cls_tokens)                
+
+                bs = attentions.shape[0]
+                nh = attentions.shape[1] # number of head
+                
+                # we keep only the output patch attention
+                attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+                
+                attentions = attentions.sum(1).unsqueeze(1)
+                # attentions = attentions[:,0,:].unsqueeze(1)
+                attentions_list.append(attentions)
+                nh = 1
+
+                if threshold is not None:
+                    if i == self.n_iter - 1:
+                        remains -= th_attn
+                        th_attn = remains
+                        assert remains.min() == 0
+                    else:
+                        remains -= th_attn
+                        # we keep only a certain percentage of the mass
+                        val, idx = torch.sort(attentions, dim=2)
+                        val /= torch.sum(val, dim=2, keepdim=True)
+                        cumval = torch.cumsum(val, dim=2)
+                        th_attn = cumval > (1 - threshold)
+                        idx2 = torch.argsort(idx, dim=2)
+                        # for head in range(nh):
+                            # th_attn[:,head] = th_attn[:,head][idx2[head]]
+                        th_attn = torch.gather(th_attn, 2, idx2).float()
+                        # Eliminate elements chosen before
+                        th_attn = th_attn * remains
+                        
+                        # th_attn = th_attn.reshape(bs, nh, w_featmap, h_featmap).float()
+                        # interpolate
+                        # th_attn = nn.functional.interpolate(th_attn, scale_factor=self.patch_size, mode="nearest")
+
+                # attentions = attentions.reshape(bs, nh, w_featmap, h_featmap)
+                # attentions = nn.functional.interpolate(attentions, scale_factor=self.patch_size, mode="nearest")
+
+                th_attn_list.append(th_attn)
+                th_attn_imgs = th_attn.reshape(bs, nh, w_featmap, h_featmap)
+                th_attn_imgs = nn.functional.interpolate(th_attn_imgs, scale_factor=self.patch_size, mode="nearest")
+                
+                input_images = input_images * (1-th_attn_imgs)
+                
+                # masked_features = (th_attn * features.permute(0,2,1)).permute(0,2,1)
+                masked_features = ((th_attn*attentions) + features.permute(0,2,1)).permute(0,2,1)
+                # masked_features = masked_features.reshape(bs, -1)
+                mask_output = self.head(masked_features).unsqueeze(dim=1)
+                mask_output_list.append(mask_output)
+            
+            th_attns = torch.concat(th_attn_list, dim=1).unsqueeze(dim=-1)
+            features_tensor = torch.stack(features_list, dim=1)
+            mask_outputs = torch.concat(mask_output_list, dim=1)
+            # attentions = torch.concat(attentions_list, dim=1).reshape(bs, -1, w_featmap, h_featmap)
+            # attentions = nn.functional.interpolate(attentions, size=(128,128))
+            attentions = torch.concat(attentions_list, dim=1).unsqueeze(dim=-1)
+            cls_tokens_tensor = torch.stack(cls_token_list, dim=1)
+            
+            ## Save th_attns as text
+            if not self.training:
+                temp = th_attns.squeeze()
+                temp = temp.view(self.n_iter, 60, 60)
+                for i in range(self.n_iter):
+                    np.savetxt('temp{}.txt'.format(i), temp[i,...].cpu().numpy().astype(int), fmt='%d')
+            
+            ## ZegOT: Global Text Alignment
+            # cls_tokens_tensor = mask_outputs
+            # align_factor = self.align_layer(torch.cat(((cls_tokens_tensor*self.text_features), self.text_features)))
+            
+            
+            if self.mask_classification:
+                mask_outputs = mask_outputs / mask_outputs.norm(dim=-1, keepdim=True)
+                logit_scale = self.logit_scale.exp()
+                if self.training:
+                    cls_score = logit_scale * mask_outputs @ self.text_features.clone().detach().t()
+                else:
+                    cls_score = logit_scale * mask_outputs @ self.text_features_test.clone().detach().t()
+
+                bg_score = logit_scale * mask_outputs @ self.bg_feature.t()
+                outputs_class = torch.cat((cls_score, bg_score), -1)
+                outputs = {"pred_logits": outputs_class}
+            else:
+                outputs = {}
+                
+            outputs['semantic_vector'] = mask_outputs
+            
+            ## outputs['pred_masks].shape = [bs, 5, 60, 60]
+            # pred_masks = th_attns * attentions
+            # mask_inputs = (features_tensor * (th_attns * attentions)).permute(0,1,3,2).reshape(bs * self.n_iter, -1, w_featmap, h_featmap)        
+            # pred_masks = self.mask_layers(mask_inputs).reshape(bs, self.n_iter, -1, w_featmap, h_featmap).squeeze(dim=2)
+            
+            # mask_inputs = (features_tensor * (th_attns * attentions)).contiguous().view(bs, -1, 384)
+            mask_inputs = (features_tensor * attentions).contiguous().view(bs, -1, 384)
+            mask_inputs = self.mask_layers(mask_inputs)
+            # pred_masks = self.mask_layers(mask_inputs).reshape(bs, self.n_iter, -1, w_featmap, h_featmap).squeeze(dim=2)
+            
+            pred_masks = mask_inputs.contiguous().view(bs, self.n_iter, w_featmap, h_featmap)
+            outputs['pred_masks'] = pred_masks
+
+            if self.training:
+                if "instances" in batched_inputs[0]:
+                    gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
+                    targets = self.prepare_targets(gt_instances, images)
+                else:
+                    targets = None
+
+                # bipartite matching-based loss
+                losses = self.criterion(outputs, targets)
+                for k in list(losses.keys()):
+                    if k in self.criterion.weight_dict:
+                        losses[k] *= self.criterion.weight_dict[k]
+                    else:
+                        # remove this loss if not specified in `weight_dict`
+                        losses.pop(k)
+
+                if self.use_npt and self.rank==0:    
+                    self.npt["train/loss_ce"].append(losses["loss_ce"])
+                    self.npt["train/loss_mask"].append(losses["loss_mask"])
+                    self.npt["train/loss_dice"].append(losses["loss_dice"])
+                    self.npt["train/loss_total"].append(sum(losses.values()))
+
+                return losses
+            ##################
+            ##  Evaluation  ##
+            ##################
+            else:
+                return
+        elif cls_mode == 'patch-wise':
+            '''
+                patch-wise classification
+                features.shape = [bs, 3600, 384]
+            '''
+            if threshold is not None:
+                bs = images.tensor.shape[0]
+                remains = torch.ones((bs,1,3600)).to(self.device)
+                th_attn = torch.zeros((bs,6,3600)).to(self.device)
+                th_attn_sum = torch.zeros((bs,1,3600)).to(self.device)
+            for i in range(self.n_iter):
+                features, attentions = self.model.get_last_selfattention(input_images)
+                features = features[:,1:,:]
+                features_list.append(features)
+
+                bs = attentions.shape[0]
+                nh = attentions.shape[1] # number of head
+                
+                # we keep only the output patch attention
+                attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+                
+                ## Select a mask has the highest attention value
+                ...
+                
+                attentions_list.append(attentions)
+
                 if i == self.n_iter - 1:
-                    remains -= th_attn
-                    th_attn = remains
+                    remains -= th_attn_sum
+                    th_attn = remains.repeat([1,nh,1])
                     assert remains.min() == 0
                 else:
-                    remains -= th_attn
+                    remains -= th_attn_sum
                     # we keep only a certain percentage of the mass
                     val, idx = torch.sort(attentions, dim=2)
                     val /= torch.sum(val, dim=2, keepdim=True)
@@ -505,465 +652,266 @@ class DINO_CLIP(nn.Module):
                     th_attn = torch.gather(th_attn, 2, idx2).float()
                     # Eliminate elements chosen before
                     th_attn = th_attn * remains
-                    
-                    # th_attn = th_attn.reshape(bs, nh, w_featmap, h_featmap).float()
-                    # interpolate
-                    # th_attn = nn.functional.interpolate(th_attn, scale_factor=self.patch_size, mode="nearest")
+                th_attn_sum = th_attn.sum(dim=1).unsqueeze(dim=1)
 
-            # attentions = attentions.reshape(bs, nh, w_featmap, h_featmap)
-            # attentions = nn.functional.interpolate(attentions, scale_factor=self.patch_size, mode="nearest")
-
-            th_attn_list.append(th_attn)
-            th_attn_imgs = th_attn.reshape(bs, nh, w_featmap, h_featmap)
-            th_attn_imgs = nn.functional.interpolate(th_attn_imgs, scale_factor=self.patch_size, mode="nearest")
-            
-            input_images = input_images * (1-th_attn_imgs)
-            
-            # masked_features = (th_attn * features.permute(0,2,1)).permute(0,2,1)
-            masked_features = (attentions * features.permute(0,2,1)).permute(0,2,1)
-            # masked_features = masked_features.reshape(bs, -1)
-            mask_output = self.head(masked_features).unsqueeze(dim=1)
-            mask_output_list.append(mask_output)
-        
-        th_attns = torch.concat(th_attn_list, dim=1).unsqueeze(dim=-1)
-        features_tensor = torch.stack(features_list, dim=1)
-        mask_outputs = torch.concat(mask_output_list, dim=1)
-        # attentions = torch.concat(attentions_list, dim=1).reshape(bs, -1, w_featmap, h_featmap)
-        # attentions = nn.functional.interpolate(attentions, size=(128,128))
-        attentions = torch.concat(attentions_list, dim=1).unsqueeze(dim=-1)
-        
-        ## Save th_attns as text
-        if not self.training:
-            import numpy as np
-            temp = th_attns.squeeze()
-            temp = temp.view(self.n_iter, 60, 60)
-            for i in range(self.n_iter):
-                np.savetxt('temp{}.txt'.format(i), temp[i,...].cpu().numpy().astype(int), fmt='%d')
-        
-        ## ZegOT: Global Text Alignment
-        # cls_tokens_tensor = mask_outputs
-        # align_factor = self.align_layer(torch.cat(((cls_tokens_tensor*self.text_features), self.text_features)))
-        
-        
-        if self.mask_classification:
-            mask_outputs = mask_outputs / mask_outputs.norm(dim=-1, keepdim=True)
-            logit_scale = self.logit_scale.exp()
-            if self.training:
-                cls_score = logit_scale * mask_outputs @ self.text_features.clone().detach().t()
-            else:
-                cls_score = logit_scale * mask_outputs @ self.text_features_test.clone().detach().t()
-
-            bg_score = logit_scale * mask_outputs @ self.bg_feature.t()
-            outputs_class = torch.cat((cls_score, bg_score), -1)
-            outputs = {"pred_logits": outputs_class}
-        else:
-            outputs = {}
-            
-        outputs['semantic_vector'] = mask_outputs
-        
-        ## outputs['pred_masks].shape = [bs, 5, 60, 60]
-        # pred_masks = th_attns * attentions
-        # mask_inputs = (features_tensor * (th_attns * attentions)).permute(0,1,3,2).reshape(bs * self.n_iter, -1, w_featmap, h_featmap)        
-        # pred_masks = self.mask_layers(mask_inputs).reshape(bs, self.n_iter, -1, w_featmap, h_featmap).squeeze(dim=2)
-        
-        # mask_inputs = (features_tensor * (th_attns * attentions)).contiguous().view(bs, -1, 384)
-        mask_inputs = (features_tensor * attentions).contiguous().view(bs, -1, 384)
-        mask_inputs = self.mask_layers(mask_inputs)
-        # pred_masks = self.mask_layers(mask_inputs).reshape(bs, self.n_iter, -1, w_featmap, h_featmap).squeeze(dim=2)
-        
-        pred_masks = mask_inputs.contiguous().view(bs, self.n_iter, w_featmap, h_featmap)
-        outputs['pred_masks'] = pred_masks
-
-        if self.training:
-            if "instances" in batched_inputs[0]:
-                gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
-                targets = self.prepare_targets(gt_instances, images)
-            else:
-                targets = None
-
-            # bipartite matching-based loss
-            losses = self.criterion(outputs, targets)
-            for k in list(losses.keys()):
-                if k in self.criterion.weight_dict:
-                    losses[k] *= self.criterion.weight_dict[k]
-                else:
-                    # remove this loss if not specified in `weight_dict`
-                    losses.pop(k)
-
-            if self.use_npt and self.rank==0:    
-                self.npt["train/loss_ce"].append(losses["loss_ce"])
-                self.npt["train/loss_mask"].append(losses["loss_mask"])
-                self.npt["train/loss_dice"].append(losses["loss_dice"])
-                self.npt["train/loss_total"].append(sum(losses.values()))
-
-            return losses
-        else:
-            mask_cls_results = outputs["pred_logits"]
-            mask_pred_results = outputs["pred_masks"]
-            
-            ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
-            # mask_pred_results = mask_pred_results.squeeze(-1).squeeze(-1)
-            # mask_pred_results = mask_pred_results.view(bs, mask_pred_results.shape[-1]//3600, 60, 60)
-            
-            # upsample masks
-            mask_pred_results = F.interpolate(
-                mask_pred_results,
-                size=(images.tensor.shape[-2], images.tensor.shape[-1]),
-                mode="bilinear",
-                align_corners=False,
-            )
-            if self.clip_classification:
-                ##########################
-                mask_pred_results_224 = F.interpolate(mask_pred_results,
-                    size=(224, 224), mode="bilinear", align_corners=False,)
-                images_tensor = F.interpolate(clip_images.tensor,
-                                              size=(224, 224), mode='bilinear', align_corners=False,)
-                mask_pred_results_224 = mask_pred_results_224.sigmoid() > 0.5
-
-                mask_pred_results_224 = mask_pred_results_224.unsqueeze(2)
-
-                masked_image_tensors = (images_tensor.unsqueeze(1) * mask_pred_results_224)
-                cropp_masked_image = True
-                # vis_cropped_image = True
-                if cropp_masked_image:
-                    # import ipdb; ipdb.set_trace()
-                    mask_pred_results_ori = mask_pred_results
-                    mask_pred_results_ori = mask_pred_results_ori.sigmoid() > 0.5
-                    mask_pred_results_ori = mask_pred_results_ori.unsqueeze(2)
-                    masked_image_tensors_ori = (clip_images.tensor.unsqueeze(1) * mask_pred_results_ori)
-                    # TODO: repeat the clip_images.tensor to get the non-masked images for later crop.
-                    ori_bs, ori_num_queries, ori_c, ori_h, ori_w = masked_image_tensors_ori.shape
-                    # if vis_cropped_image:
-                    clip_images_repeat = clip_images.tensor.unsqueeze(1).repeat(1, ori_num_queries, 1, 1, 1)
-                    clip_images_repeat = clip_images_repeat.reshape(ori_bs * ori_num_queries, ori_c, ori_h, ori_w)
-
-                    masked_image_tensors_ori = masked_image_tensors_ori.reshape(ori_bs * ori_num_queries, ori_c, ori_h, ori_w)
-                    import torchvision
-                    # binary_mask_preds: [1, 100, 512, 704]
-                    binary_mask_preds = mask_pred_results.sigmoid() > 0.5
-                    binary_bs, binary_num_queries, binary_H, binary_W = binary_mask_preds.shape
-                    # assert binary_bs == 1
-                    binary_mask_preds = binary_mask_preds.reshape(binary_bs * binary_num_queries,
-                                                                  binary_H, binary_W)
-                    sum_y = torch.sum(binary_mask_preds, dim=1)
-                    cumsum_x = torch.cumsum(sum_y, dim=1).float()
-                    xmaxs = torch.argmax(cumsum_x, dim=1, keepdim=True) # shape: [100, 1]
-                    cumsum_x[cumsum_x==0] = np.inf
-                    xmins = torch.argmin(cumsum_x, dim=1, keepdim=True)
-                    sum_x = torch.sum(binary_mask_preds, dim=2)
-                    cumsum_y = torch.cumsum(sum_x, dim=1).float()
-                    ymaxs = torch.argmax(cumsum_y, dim=1, keepdim=True)
-                    cumsum_y[cumsum_y==0] = np.inf
-                    ymins = torch.argmin(cumsum_y, dim=1, keepdim=True)
-                    areas = (ymaxs - ymins) * (xmaxs - xmins)
-                    ymaxs[areas == 0] = images.tensor.shape[-2]
-                    ymins[areas == 0] = 0
-                    xmaxs[areas == 0] = images.tensor.shape[-1]
-                    xmins[areas == 0] = 0
-                    boxes = torch.cat((xmins, ymins, xmaxs, ymaxs), 1)  # [binary_bs * binary_num_queries, 4]
-                    # boxes = boxes.reshape(binary_bs, binary_num_queries, 4)
-                    # TODO: crop images by boxes in the original image size
-                    # boxes_list = [boxes[i].reshape(1, -1) for i in range(boxes.shape[0])]
-                    boxes_list = []
-                    for i in range(boxes.shape[0]):
-                        boxes_list.append(boxes[i].reshape(1, -1).float())
-                    box_masked_images = torchvision.ops.roi_align(masked_image_tensors_ori, boxes_list, 224, aligned=True)
-                    box_masked_images = box_masked_images.reshape(ori_bs, ori_num_queries, ori_c, 224, 224)
-
-                    # if vis_cropped_image:
-                        # import ipdb; ipdb.set_trace()
-                    box_images = torchvision.ops.roi_align(clip_images_repeat, boxes_list, 224, aligned=True)
-                    box_images = box_images.reshape(ori_bs, ori_num_queries, ori_c, 224, 224)
-
-                count = 0
-            processed_results = []
-            for mask_cls_result, mask_pred_result, input_per_image, image_size in zip(
-                mask_cls_results, mask_pred_results, batched_inputs, images.image_sizes
-            ):
-                height = input_per_image.get("height", image_size[0])
-                width = input_per_image.get("width", image_size[1])
-
-                if self.clip_classification:
-                    masked_image_tensor = masked_image_tensors[count]
-                    # if cropp_masked_image:
-                    box_masked_image_tensor = box_masked_images[count]
-                    # if vis_cropped_image:
-                    box_image_tensor = box_images[count]
-                    # boxs = boxes_list[count]
-                    count = count + 1
-
-                    with torch.no_grad():
-                        if self.clip_cls_style == "cropmask":
-                            clip_input_images = box_masked_image_tensor
-                        elif self.clip_cls_style == "mask":
-                            clip_input_images = masked_image_tensor
-                        elif self.clip_cls_style == "crop":
-                            clip_input_images = box_image_tensor
-                        else:
-                            raise NotImplementedError
-
-                        image_features = self.clip_model.encode_image(clip_input_images)
-                        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                        logit_scale = self.clip_model.logit_scale.exp()
-                        logits_per_image = logit_scale.half() * image_features @ self.text_features_test_clip.t().half()
-                        # logits_per_image = logit_scale.half() * image_features @ self.sem_seg_head.predictor.text_features_test_clip.half()       ## for CoCoOp
-                        logits_per_image = logits_per_image.squeeze(0)
-                        logits_per_image = logits_per_image.float()
-                        
-                        ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
-                        logits_per_image = logits_per_image.unsqueeze(1)
-                        logits_per_image = logits_per_image.repeat(1,3600,1).view(-1,self.num_classes)
-                        
-                        mask_cls_result = mask_cls_result.reshape(-1, mask_cls_result.shape[-1])
-                        
-                        logits_per_image = torch.cat((logits_per_image, mask_cls_result[:, -1].unsqueeze(1)), 1)
-                        
-                        if mask_vis:
-                            return mask_pred_results, cls_score, logits_per_image
-                        
-                        assert not (self.ensembling and self.ensembling_all_cls)
-                        if self.ensembling:
-                            # note that in this branch, average the seen score of clip
-                            # seen_indexes, unseen_indexes = self.seen_unseen_indexes()
-                            lambda_balance = 2 / 3.
-                            mask_cls_result = F.softmax(mask_cls_result, dim=-1)[..., :-1]
-                            # shape of logits_per_image: [100, 171]
-                            logits_per_image = F.softmax(logits_per_image, dim=-1)[..., :-1]
-                            # remove the influence of clip on seen classes
-                            logits_per_image[:, self.seen_indexes] = logits_per_image[:, self.seen_indexes].mean(dim=1, keepdim=True)
-
-                            mask_cls_result[:, self.seen_indexes] = torch.pow(mask_cls_result[:, self.seen_indexes], lambda_balance) \
-                                                               * torch.pow(logits_per_image[:, self.seen_indexes], 1 - lambda_balance)
-                            mask_cls_result[:, self.unseen_indexes] = torch.pow(mask_cls_result[:, self.unseen_indexes], 1 - lambda_balance) \
-                                                               * torch.pow(logits_per_image[:, self.unseen_indexes], lambda_balance)
-                        elif self.ensembling_all_cls:
-                            lambda_balance = 2 / 3.
-                            mask_cls_result = F.softmax(mask_cls_result, dim=-1)[..., :-1]
-                            logits_per_image = F.softmax(logits_per_image, dim=-1)[..., :-1]
-                            mask_cls_result = torch.pow(mask_cls_result, 1 - lambda_balance) \
-                                                               * torch.pow(logits_per_image, lambda_balance)
-                        else:
-                            mask_cls_result = logits_per_image
-
-                    ######################################################################################
-                if self.sem_seg_postprocess_before_inference:
-                    mask_pred_result = sem_seg_postprocess(
-                        mask_pred_result, image_size, height, width
-                    )
-
-                ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
-                mask_cls_result = mask_cls_result.view(mask_cls_result.shape[0]//3600, 3600, mask_cls_result.shape[1])
-                # mask_cls_result: [5, 3600, 16] --> [5, 16]
-                # unq, cnt = mask_cls_result.argmax(dim=2).unique(dim=1, return_counts=True)
-                mask_cls_result = mask_cls_result.mean(dim=1)
+                th_attn_list.append(th_attn)
                 
-
-                # semantic segmentation inference
-                if (self.clip_classification and self.ensembling) or (self.clip_classification and self.ensembling_all_cls):
-                    r = self.semantic_inference2(mask_cls_result, mask_pred_result)
+                th_attn_sum = torch.where(th_attn_sum==0, th_attn_sum, torch.tensor([1.],device=self.device))
+                th_attn_imgs = th_attn_sum.reshape(bs, 1, w_featmap, h_featmap)
+                th_attn_imgs = nn.functional.interpolate(th_attn_imgs, scale_factor=self.patch_size, mode="nearest")
+                
+                input_images = input_images * (1-th_attn_imgs)
+                
+                masked_features = ((th_attn * attentions).unsqueeze(dim=-1) + features.unsqueeze(dim=1).repeat([1,nh,1,1]))
+                mask_output = self.head(masked_features)
+                mask_output_list.append(mask_output)
+            
+            th_attns = torch.concat(th_attn_list, dim=1).unsqueeze(dim=-1)
+            features_tensor = torch.stack(features_list, dim=1)
+            mask_outputs = torch.concat(mask_output_list, dim=1)
+            attentions = torch.concat(attentions_list, dim=1).unsqueeze(dim=-1)
+            
+            ## Attentions refinement
+            bin_attns = th_attns * attentions
+            bin_attns = bin_attns.reshape(bs, nh, self.n_iter, -1, 1)
+            bin_attns = (bin_attns == bin_attns.max(dim=1, keepdim=True)[0]).to(bin_attns)
+            bin_attns = bin_attns.reshape(bs, nh*self.n_iter, -1, 1)
+            attentions = bin_attns * attentions
+            
+            ## Save th_attns as text
+            # if not self.training:
+            #     temp = th_attns.squeeze()
+            #     temp = temp.view(self.n_iter, 60, 60)
+            #     for i in range(self.n_iter):
+            #         np.savetxt('temp{}.txt'.format(i), temp[i,...].cpu().numpy().astype(int), fmt='%d')
+            
+            ## ZegOT: Global Text Alignment
+            # cls_tokens_tensor = mask_outputs
+            # align_factor = self.align_layer(torch.cat(((cls_tokens_tensor*self.text_features), self.text_features)))
+            
+            
+            if self.mask_classification:
+                mask_outputs = mask_outputs / mask_outputs.norm(dim=-1, keepdim=True)
+                logit_scale = self.logit_scale.exp()
+                if self.training:
+                    cls_score = logit_scale * mask_outputs @ self.text_features.clone().detach().t()
                 else:
-                    r = self.semantic_inference(mask_cls_result, mask_pred_result)
-                if not self.sem_seg_postprocess_before_inference:
-                    r = sem_seg_postprocess(r, image_size, height, width)
-                #############################################################################
-                # gzero calibrate
-                if self.gzero_calibrate > 0:
-                    r[self.seen_indexes, :, :] = r[self.seen_indexes, :, :] - self.gzero_calibrate
-                ###########################################################################
-                processed_results.append({"sem_seg": r})
+                    cls_score = logit_scale * mask_outputs @ self.text_features_test.clone().detach().t()
 
-            return processed_results
-
-
-        features = self.backbone(images.tensor)
-        outputs = self.sem_seg_head(features, None, ori_sizes)
-        
-        if self.training:
-            # mask classification target
-            if "instances" in batched_inputs[0]:
-                gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
-                targets = self.prepare_targets(gt_instances, images)
+                bg_score = logit_scale * mask_outputs @ self.bg_feature.t()
+                outputs_class = torch.cat((cls_score, bg_score), -1)
+                outputs = {"pred_logits": outputs_class}
             else:
-                targets = None
-
-            # bipartite matching-based loss
-            losses = self.criterion(outputs, targets)
-            for k in list(losses.keys()):
-                if k in self.criterion.weight_dict:
-                    losses[k] *= self.criterion.weight_dict[k]
-                else:
-                    # remove this loss if not specified in `weight_dict`
-                    losses.pop(k)
+                outputs = {}
+            outputs['semantic_vector'] = mask_outputs
                         
-            if self.use_npt and self.rank==0:    
-                self.npt["train/loss_ce"].append(losses["loss_ce"])
-                self.npt["train/loss_mask"].append(losses["loss_mask"])
-                self.npt["train/loss_dice"].append(losses["loss_dice"])
-                self.npt["train/loss_total"].append(sum(losses.values()))
+            mask_inputs = (features_tensor.repeat([1,nh,1,1]) + (th_attns * attentions)).contiguous().view(bs, -1, 384)
+            mask_inputs = self.mask_layers(mask_inputs)
+            
+            pred_masks = mask_inputs.contiguous().view(bs, self.n_iter*nh, w_featmap, h_featmap)
+            outputs['pred_masks'] = pred_masks
 
-            return losses
-        else:
-            mask_cls_results = outputs["pred_logits"]
-            mask_pred_results = outputs["pred_masks"]
-            # upsample masks
-            mask_pred_results = F.interpolate(
-                mask_pred_results,
-                size=(images.tensor.shape[-2], images.tensor.shape[-1]),
-                mode="bilinear",
-                align_corners=False,
-            )
-            if self.clip_classification:
-                ##########################
-                mask_pred_results_224 = F.interpolate(mask_pred_results,
-                    size=(224, 224), mode="bilinear", align_corners=False,)
-                images_tensor = F.interpolate(clip_images.tensor,
-                                              size=(224, 224), mode='bilinear', align_corners=False,)
-                mask_pred_results_224 = mask_pred_results_224.sigmoid() > 0.5
 
-                mask_pred_results_224 = mask_pred_results_224.unsqueeze(2)
+            ## Training or Inference
+            if self.training:
+                if "instances" in batched_inputs[0]:
+                    gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
+                    targets = self.prepare_targets(gt_instances, images)
+                else:
+                    targets = None
 
-                masked_image_tensors = (images_tensor.unsqueeze(1) * mask_pred_results_224)
-                cropp_masked_image = True
-                # vis_cropped_image = True
-                if cropp_masked_image:
-                    # import ipdb; ipdb.set_trace()
-                    mask_pred_results_ori = mask_pred_results
-                    mask_pred_results_ori = mask_pred_results_ori.sigmoid() > 0.5
-                    mask_pred_results_ori = mask_pred_results_ori.unsqueeze(2)
-                    masked_image_tensors_ori = (clip_images.tensor.unsqueeze(1) * mask_pred_results_ori)
-                    # TODO: repeat the clip_images.tensor to get the non-masked images for later crop.
-                    ori_bs, ori_num_queries, ori_c, ori_h, ori_w = masked_image_tensors_ori.shape
-                    # if vis_cropped_image:
-                    clip_images_repeat = clip_images.tensor.unsqueeze(1).repeat(1, ori_num_queries, 1, 1, 1)
-                    clip_images_repeat = clip_images_repeat.reshape(ori_bs * ori_num_queries, ori_c, ori_h, ori_w)
+                # bipartite matching-based loss
+                losses = self.criterion(outputs, targets)
+                for k in list(losses.keys()):
+                    if k in self.criterion.weight_dict:
+                        losses[k] *= self.criterion.weight_dict[k]
+                    else:
+                        # remove this loss if not specified in `weight_dict`
+                        losses.pop(k)
 
-                    masked_image_tensors_ori = masked_image_tensors_ori.reshape(ori_bs * ori_num_queries, ori_c, ori_h, ori_w)
-                    import torchvision
-                    import numpy as np
-                    # binary_mask_preds: [1, 100, 512, 704]
-                    binary_mask_preds = mask_pred_results.sigmoid() > 0.5
-                    binary_bs, binary_num_queries, binary_H, binary_W = binary_mask_preds.shape
-                    # assert binary_bs == 1
-                    binary_mask_preds = binary_mask_preds.reshape(binary_bs * binary_num_queries,
-                                                                  binary_H, binary_W)
-                    sum_y = torch.sum(binary_mask_preds, dim=1)
-                    cumsum_x = torch.cumsum(sum_y, dim=1).float()
-                    xmaxs = torch.argmax(cumsum_x, dim=1, keepdim=True) # shape: [100, 1]
-                    cumsum_x[cumsum_x==0] = np.inf
-                    xmins = torch.argmin(cumsum_x, dim=1, keepdim=True)
-                    sum_x = torch.sum(binary_mask_preds, dim=2)
-                    cumsum_y = torch.cumsum(sum_x, dim=1).float()
-                    ymaxs = torch.argmax(cumsum_y, dim=1, keepdim=True)
-                    cumsum_y[cumsum_y==0] = np.inf
-                    ymins = torch.argmin(cumsum_y, dim=1, keepdim=True)
-                    areas = (ymaxs - ymins) * (xmaxs - xmins)
-                    ymaxs[areas == 0] = images.tensor.shape[-2]
-                    ymins[areas == 0] = 0
-                    xmaxs[areas == 0] = images.tensor.shape[-1]
-                    xmins[areas == 0] = 0
-                    boxes = torch.cat((xmins, ymins, xmaxs, ymaxs), 1)  # [binary_bs * binary_num_queries, 4]
-                    # boxes = boxes.reshape(binary_bs, binary_num_queries, 4)
-                    # TODO: crop images by boxes in the original image size
-                    # boxes_list = [boxes[i].reshape(1, -1) for i in range(boxes.shape[0])]
-                    boxes_list = []
-                    for i in range(boxes.shape[0]):
-                        boxes_list.append(boxes[i].reshape(1, -1).float())
-                    box_masked_images = torchvision.ops.roi_align(masked_image_tensors_ori, boxes_list, 224, aligned=True)
-                    box_masked_images = box_masked_images.reshape(ori_bs, ori_num_queries, ori_c, 224, 224)
+                if self.use_npt and self.rank==0:    
+                    self.npt["train/loss_ce"].append(losses["loss_ce"])
+                    self.npt["train/loss_mask"].append(losses["loss_mask"])
+                    self.npt["train/loss_dice"].append(losses["loss_dice"])
+                    self.npt["train/loss_total"].append(sum(losses.values()))
 
-                    # if vis_cropped_image:
-                        # import ipdb; ipdb.set_trace()
-                    box_images = torchvision.ops.roi_align(clip_images_repeat, boxes_list, 224, aligned=True)
-                    box_images = box_images.reshape(ori_bs, ori_num_queries, ori_c, 224, 224)
-
-                count = 0
-            processed_results = []
-            for mask_cls_result, mask_pred_result, input_per_image, image_size in zip(
-                mask_cls_results, mask_pred_results, batched_inputs, images.image_sizes
-            ):
-                height = input_per_image.get("height", image_size[0])
-                width = input_per_image.get("width", image_size[1])
-
+                return losses
+            else:
+                mask_cls_results = outputs["pred_logits"]
+                mask_pred_results = outputs["pred_masks"]
+                
+                ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
+                # mask_pred_results = mask_pred_results.squeeze(-1).squeeze(-1)
+                # mask_pred_results = mask_pred_results.view(bs, mask_pred_results.shape[-1]//3600, 60, 60)
+                
+                # upsample masks
+                mask_pred_results = F.interpolate(
+                    mask_pred_results,
+                    size=(images.tensor.shape[-2], images.tensor.shape[-1]),
+                    mode="bilinear",
+                    align_corners=False,
+                )
                 if self.clip_classification:
-                    import numpy as np
-                    masked_image_tensor = masked_image_tensors[count]
-                    # if cropp_masked_image:
-                    box_masked_image_tensor = box_masked_images[count]
-                    # if vis_cropped_image:
-                    box_image_tensor = box_images[count]
-                    # boxs = boxes_list[count]
-                    count = count + 1
+                    ##########################
+                    mask_pred_results_224 = F.interpolate(mask_pred_results,
+                        size=(224, 224), mode="bilinear", align_corners=False,)
+                    images_tensor = F.interpolate(clip_images.tensor,
+                                                size=(224, 224), mode='bilinear', align_corners=False,)
+                    mask_pred_results_224 = mask_pred_results_224.sigmoid() > 0.5
 
-                    with torch.no_grad():
-                        if self.clip_cls_style == "cropmask":
-                            clip_input_images = box_masked_image_tensor
-                        elif self.clip_cls_style == "mask":
-                            clip_input_images = masked_image_tensor
-                        elif self.clip_cls_style == "crop":
-                            clip_input_images = box_image_tensor
-                        else:
-                            raise NotImplementedError
+                    mask_pred_results_224 = mask_pred_results_224.unsqueeze(2)
 
-                        image_features = self.sem_seg_head.predictor.clip_model.encode_image(clip_input_images)
-                        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                        logit_scale = self.sem_seg_head.predictor.clip_model.logit_scale.exp()
-                        logits_per_image = logit_scale.half() * image_features @ self.sem_seg_head.predictor.text_features_test_clip.t().half()
-                        # logits_per_image = logit_scale.half() * image_features @ self.sem_seg_head.predictor.text_features_test_clip.half()       ## for CoCoOp
-                        logits_per_image = logits_per_image.squeeze(0)
-                        logits_per_image = logits_per_image.float()
-                        logits_per_image = torch.cat((logits_per_image, mask_cls_result[:, -1].unsqueeze(1)), 1)
-                        
-                        if mask_vis:
-                            return mask_pred_results, cls_score, logits_per_image
-                        
-                        assert not (self.ensembling and self.ensembling_all_cls)
-                        if self.ensembling:
-                            # note that in this branch, average the seen score of clip
-                            # seen_indexes, unseen_indexes = self.seen_unseen_indexes()
-                            lambda_balance = 2 / 3.
-                            mask_cls_result = F.softmax(mask_cls_result, dim=-1)[..., :-1]
-                            # shape of logits_per_image: [100, 171]
-                            logits_per_image = F.softmax(logits_per_image, dim=-1)[..., :-1]
-                            # remove the influence of clip on seen classes
-                            logits_per_image[:, self.seen_indexes] = logits_per_image[:, self.seen_indexes].mean(dim=1, keepdim=True)
+                    masked_image_tensors = (images_tensor.unsqueeze(1) * mask_pred_results_224)
+                    cropp_masked_image = True
+                    # vis_cropped_image = True
+                    if cropp_masked_image:
+                        # import ipdb; ipdb.set_trace()
+                        mask_pred_results_ori = mask_pred_results
+                        mask_pred_results_ori = mask_pred_results_ori.sigmoid() > 0.5
+                        mask_pred_results_ori = mask_pred_results_ori.unsqueeze(2)
+                        masked_image_tensors_ori = (clip_images.tensor.unsqueeze(1) * mask_pred_results_ori)
+                        # TODO: repeat the clip_images.tensor to get the non-masked images for later crop.
+                        ori_bs, ori_num_queries, ori_c, ori_h, ori_w = masked_image_tensors_ori.shape
+                        # if vis_cropped_image:
+                        clip_images_repeat = clip_images.tensor.unsqueeze(1).repeat(1, ori_num_queries, 1, 1, 1)
+                        clip_images_repeat = clip_images_repeat.reshape(ori_bs * ori_num_queries, ori_c, ori_h, ori_w)
 
-                            mask_cls_result[:, self.seen_indexes] = torch.pow(mask_cls_result[:, self.seen_indexes], lambda_balance) \
-                                                               * torch.pow(logits_per_image[:, self.seen_indexes], 1 - lambda_balance)
-                            mask_cls_result[:, self.unseen_indexes] = torch.pow(mask_cls_result[:, self.unseen_indexes], 1 - lambda_balance) \
-                                                               * torch.pow(logits_per_image[:, self.unseen_indexes], lambda_balance)
-                        elif self.ensembling_all_cls:
-                            lambda_balance = 2 / 3.
-                            mask_cls_result = F.softmax(mask_cls_result, dim=-1)[..., :-1]
-                            logits_per_image = F.softmax(logits_per_image, dim=-1)[..., :-1]
-                            mask_cls_result = torch.pow(mask_cls_result, 1 - lambda_balance) \
-                                                               * torch.pow(logits_per_image, lambda_balance)
-                        else:
-                            mask_cls_result = logits_per_image
+                        masked_image_tensors_ori = masked_image_tensors_ori.reshape(ori_bs * ori_num_queries, ori_c, ori_h, ori_w)
+                        import torchvision
+                        # binary_mask_preds: [1, 100, 512, 704]
+                        binary_mask_preds = mask_pred_results.sigmoid() > 0.5
+                        binary_bs, binary_num_queries, binary_H, binary_W = binary_mask_preds.shape
+                        # assert binary_bs == 1
+                        binary_mask_preds = binary_mask_preds.reshape(binary_bs * binary_num_queries,
+                                                                    binary_H, binary_W)
+                        sum_y = torch.sum(binary_mask_preds, dim=1)
+                        cumsum_x = torch.cumsum(sum_y, dim=1).float()
+                        xmaxs = torch.argmax(cumsum_x, dim=1, keepdim=True) # shape: [100, 1]
+                        cumsum_x[cumsum_x==0] = np.inf
+                        xmins = torch.argmin(cumsum_x, dim=1, keepdim=True)
+                        sum_x = torch.sum(binary_mask_preds, dim=2)
+                        cumsum_y = torch.cumsum(sum_x, dim=1).float()
+                        ymaxs = torch.argmax(cumsum_y, dim=1, keepdim=True)
+                        cumsum_y[cumsum_y==0] = np.inf
+                        ymins = torch.argmin(cumsum_y, dim=1, keepdim=True)
+                        areas = (ymaxs - ymins) * (xmaxs - xmins)
+                        ymaxs[areas == 0] = images.tensor.shape[-2]
+                        ymins[areas == 0] = 0
+                        xmaxs[areas == 0] = images.tensor.shape[-1]
+                        xmins[areas == 0] = 0
+                        boxes = torch.cat((xmins, ymins, xmaxs, ymaxs), 1)  # [binary_bs * binary_num_queries, 4]
+                        # boxes = boxes.reshape(binary_bs, binary_num_queries, 4)
+                        # TODO: crop images by boxes in the original image size
+                        # boxes_list = [boxes[i].reshape(1, -1) for i in range(boxes.shape[0])]
+                        boxes_list = []
+                        for i in range(boxes.shape[0]):
+                            boxes_list.append(boxes[i].reshape(1, -1).float())
+                        box_masked_images = torchvision.ops.roi_align(masked_image_tensors_ori, boxes_list, 224, aligned=True)
+                        box_masked_images = box_masked_images.reshape(ori_bs, ori_num_queries, ori_c, 224, 224)
 
-                    if tsne:
-                        return x_cls, image_features, text_features
+                        # if vis_cropped_image:
+                            # import ipdb; ipdb.set_trace()
+                        box_images = torchvision.ops.roi_align(clip_images_repeat, boxes_list, 224, aligned=True)
+                        box_images = box_images.reshape(ori_bs, ori_num_queries, ori_c, 224, 224)
 
-                    ######################################################################################
-                if self.sem_seg_postprocess_before_inference:
-                    mask_pred_result = sem_seg_postprocess(
-                        mask_pred_result, image_size, height, width
-                    )
+                    count = 0
+                processed_results = []
+                for mask_cls_result, mask_pred_result, input_per_image, image_size in zip(
+                    mask_cls_results, mask_pred_results, batched_inputs, images.image_sizes
+                ):
+                    height = input_per_image.get("height", image_size[0])
+                    width = input_per_image.get("width", image_size[1])
 
-                # semantic segmentation inference
-                if (self.clip_classification and self.ensembling) or (self.clip_classification and self.ensembling_all_cls):
-                    r = self.semantic_inference2(mask_cls_result, mask_pred_result)
-                else:
-                    r = self.semantic_inference(mask_cls_result, mask_pred_result)
-                if not self.sem_seg_postprocess_before_inference:
-                    r = sem_seg_postprocess(r, image_size, height, width)
-                #############################################################################
-                # gzero calibrate
-                if self.gzero_calibrate > 0:
-                    r[self.seen_indexes, :, :] = r[self.seen_indexes, :, :] - self.gzero_calibrate
-                ###########################################################################
-                processed_results.append({"sem_seg": r})
+                    if self.clip_classification:
+                        masked_image_tensor = masked_image_tensors[count]
+                        # if cropp_masked_image:
+                        box_masked_image_tensor = box_masked_images[count]
+                        # if vis_cropped_image:
+                        box_image_tensor = box_images[count]
+                        # boxs = boxes_list[count]
+                        count = count + 1
 
-            return processed_results
+                        with torch.no_grad():
+                            if self.clip_cls_style == "cropmask":
+                                clip_input_images = box_masked_image_tensor
+                            elif self.clip_cls_style == "mask":
+                                clip_input_images = masked_image_tensor
+                            elif self.clip_cls_style == "crop":
+                                clip_input_images = box_image_tensor
+                            else:
+                                raise NotImplementedError
+
+                            image_features = self.clip_model.encode_image(clip_input_images)
+                            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                            logit_scale = self.clip_model.logit_scale.exp()
+                            logits_per_image = logit_scale.half() * image_features @ self.text_features_test_clip.t().half()
+                            # logits_per_image = logit_scale.half() * image_features @ self.sem_seg_head.predictor.text_features_test_clip.half()       ## for CoCoOp
+                            logits_per_image = logits_per_image.squeeze(0)
+                            logits_per_image = logits_per_image.float()
+                            
+                            ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
+                            logits_per_image = logits_per_image.unsqueeze(1)
+                            logits_per_image = logits_per_image.repeat(1,3600,1).view(-1,self.num_classes)
+                            
+                            mask_cls_result = mask_cls_result.reshape(-1, mask_cls_result.shape[-1])
+                            
+                            logits_per_image = torch.cat((logits_per_image, mask_cls_result[:, -1].unsqueeze(1)), 1)
+                            
+                            if mask_vis:
+                                return mask_pred_results, cls_score, logits_per_image
+                            
+                            assert not (self.ensembling and self.ensembling_all_cls)
+                            if self.ensembling:
+                                # note that in this branch, average the seen score of clip
+                                # seen_indexes, unseen_indexes = self.seen_unseen_indexes()
+                                lambda_balance = 2 / 3.
+                                mask_cls_result = F.softmax(mask_cls_result, dim=-1)[..., :-1]
+                                # shape of logits_per_image: [100, 171]
+                                logits_per_image = F.softmax(logits_per_image, dim=-1)[..., :-1]
+                                # remove the influence of clip on seen classes
+                                logits_per_image[:, self.seen_indexes] = logits_per_image[:, self.seen_indexes].mean(dim=1, keepdim=True)
+
+                                mask_cls_result[:, self.seen_indexes] = torch.pow(mask_cls_result[:, self.seen_indexes], lambda_balance) \
+                                                                * torch.pow(logits_per_image[:, self.seen_indexes], 1 - lambda_balance)
+                                mask_cls_result[:, self.unseen_indexes] = torch.pow(mask_cls_result[:, self.unseen_indexes], 1 - lambda_balance) \
+                                                                * torch.pow(logits_per_image[:, self.unseen_indexes], lambda_balance)
+                            elif self.ensembling_all_cls:
+                                lambda_balance = 2 / 3.
+                                mask_cls_result = F.softmax(mask_cls_result, dim=-1)[..., :-1]
+                                logits_per_image = F.softmax(logits_per_image, dim=-1)[..., :-1]
+                                mask_cls_result = torch.pow(mask_cls_result, 1 - lambda_balance) \
+                                                                * torch.pow(logits_per_image, lambda_balance)
+                            else:
+                                mask_cls_result = logits_per_image
+
+                        ######################################################################################
+                    if self.sem_seg_postprocess_before_inference:
+                        mask_pred_result = sem_seg_postprocess(
+                            mask_pred_result, image_size, height, width
+                        )
+
+                    ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
+                    mask_cls_result = mask_cls_result.view(mask_cls_result.shape[0]//3600, 3600, mask_cls_result.shape[1])
+                    # mask_cls_result: [5, 3600, 16] --> [5, 16]
+                    # unq, cnt = mask_cls_result.argmax(dim=2).unique(dim=1, return_counts=True)
+                    mask_cls_result = mask_cls_result.mean(dim=1)
+                    
+
+                    # semantic segmentation inference
+                    if (self.clip_classification and self.ensembling) or (self.clip_classification and self.ensembling_all_cls):
+                        r = self.semantic_inference2(mask_cls_result, mask_pred_result)
+                    else:
+                        r = self.semantic_inference(mask_cls_result, mask_pred_result)
+                    if not self.sem_seg_postprocess_before_inference:
+                        r = sem_seg_postprocess(r, image_size, height, width)
+                    #############################################################################
+                    # gzero calibrate
+                    if self.gzero_calibrate > 0:
+                        r[self.seen_indexes, :, :] = r[self.seen_indexes, :, :] - self.gzero_calibrate
+                    ###########################################################################
+                    processed_results.append({"sem_seg": r})
+
+                return processed_results
 
     def prepare_targets(self, targets, images):
         h, w = images.tensor.shape[-2:]

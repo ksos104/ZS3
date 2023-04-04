@@ -231,6 +231,17 @@ class VisionTransformer(nn.Module):
             if len(self.blocks) - i <= n:
                 output.append(self.norm(x))
         return output
+    
+    def get_attn_and_cls(self, x):
+        x = self.prepare_tokens(x)
+        for i, blk in enumerate(self.blocks):
+            if i < len(self.blocks) - 1:
+                x = blk(x)
+            else:
+                # return attention of the last block
+                features, attentions = blk(x, return_attention=True)
+        x = self.norm(features)
+        return x[:, 0], features, attentions        
 
 
 def vit_tiny(patch_size=16, **kwargs):

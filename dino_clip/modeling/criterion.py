@@ -104,12 +104,13 @@ class SetCriterion(nn.Module):
         
         
         ## Print
-        print("pred_logits: ", src_logits.argmax(-1).unique())
-        print("tgt_idx: ", target_classes_o)
+        # print("pred_logits: ", src_logits.argmax(-1).unique())
+        # print("tgt_idx: ", target_classes_o)
         
 
         # loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
-        loss_ce = F.cross_entropy(src_logits.reshape(2,-1,16).transpose(1,2), target_classes.unsqueeze(-1).expand(2,10,3600).reshape(2,-1))
+        bs = src_logits.shape[0]
+        loss_ce = F.cross_entropy(src_logits.reshape(bs,-1,16).transpose(1,2), target_classes.unsqueeze(-1).expand(bs,target_classes.shape[1],3600).reshape(bs,-1))
         losses = {"loss_ce": loss_ce}
         return losses
 

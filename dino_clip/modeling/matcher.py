@@ -120,6 +120,7 @@ class HungarianMatcher(nn.Module):
                 cost_class = cost_class.reshape(num_queries, -1)
             else:
                 # cost_class = cost_class.contiguous().view(num_queries, -1, cost_class.shape[-1])
+                # cost_class = cost_class.sum(dim=1) / cost_class.norm(dim=1)
                 cost_class = cost_class.mean(dim=1)
 
             # Downsample gt masks to save memory
