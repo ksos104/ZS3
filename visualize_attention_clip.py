@@ -221,30 +221,110 @@ if __name__ == '__main__':
     print("image0: ", class_texts[cls_score.argmax()])
 
     num_iter = 10
+    bs = img.shape[0]
+    remains = torch.ones((bs,1,3600)).to(device)
+    th_attn = torch.zeros((bs,6,3600)).to(device)
+    th_attn_sum = torch.zeros((bs,1,3600)).to(device)
     for i in range(num_iter):
         _, attentions = model.get_last_selfattention(img.to(device))
 
+        bs = attentions.shape[0]
         nh = attentions.shape[1] # number of head
 
         # we keep only the output patch attention
-        attentions = attentions[0, :, 0, 1:].reshape(nh, -1)
+        attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
         
-        # attentions = attentions.sum(0).unsqueeze(0)
-        # nh = 1
+        ## self-attention map                
+        # cls_attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+        # idx_attentions = torch.argmax(cls_attentions, dim=-1)
+        # attentions = attentions[:, :, 1:, 1:]
+        # # attentions = torch.gather(attentions, dim=2, index=idx_attentions)
+        # temp_attentions = []
+        # for i_bs in range(bs):
+        #     for i_head in range(nh):
+        #         temp_attentions.append(attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
+        # attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
+        
+        
+        ###################################################
+        ## Select a mask has the highest attention value
+        # from skimage.segmentation import watershed
+        # from skimage.feature import peak_local_max
+        # from scipy import ndimage as ndi
 
+        # def find_consecutive_mask(heatmap):
+        #     heatmap = heatmap.reshape(heatmap.shape[0], heatmap.shape[1], 60, 60)
+            
+        #     heatmap = heatmap[0,0,...]
+            
+        #     # Find the local maxima in the heatmap
+        #     # local_maxima = peak_local_max(heatmap.cpu().numpy(), threshold_abs=torch.mean(heatmap.cpu()).numpy(), exclude_border=False, min_distance=60)
+        #     local_maxima = peak_local_max(heatmap.cpu().numpy(), exclude_border=False, min_distance=30)
+        #     print(local_maxima)
+            
+        #     '''
+        #         markers를 잘못 뽑는 것 같음
+        #     '''
+        #     mask = np.zeros(heatmap.shape, dtype=bool)
+        #     mask[tuple(local_maxima.T)] = True
+        #     markers, _ = ndi.label(mask)
+            
+        #     # Perform watershed segmentation on the heatmap
+        #     # labels = watershed(-heatmap.cpu().numpy(), markers=markers, mask=(heatmap >= torch.mean(heatmap)).cpu())
+        #     labels = watershed(-heatmap.cpu().numpy(), markers=markers, mask=(heatmap >= 0.0001).cpu())
+        #     labels = torch.from_numpy(labels).to(device)
+            
+        #     # Find the label corresponding to the highest peak
+        #     max_label = labels[np.unravel_index(torch.argmax(heatmap).cpu(), heatmap.shape)]
+            
+        #     # Create a mask that covers the highest peak and its surrounding hill over the threshold
+        #     mask = torch.zeros_like(heatmap).cuda()
+        #     mask[labels == max_label] = 1
+        #     mask[heatmap < torch.mean(heatmap)] = 0
+            
+        #     # Convert mask back to a numpy array and return
+        #     # return mask.numpy()
+        #     return mask * heatmap
+        
+        # nh = 1
+        # attentions = find_consecutive_mask(attentions).reshape(nh, -1)
+        ###################################################
+        
+        
         if args.threshold is not None:
-            # we keep only a certain percentage of the mass
-            val, idx = torch.sort(attentions)
-            val /= torch.sum(val, dim=1, keepdim=True)
-            cumval = torch.cumsum(val, dim=1)
-            th_attn = cumval > (1 - args.threshold)
-            idx2 = torch.argsort(idx)
-            for head in range(nh):
-                th_attn[head] = th_attn[head][idx2[head]]
+            if i == num_iter - 1:
+                remains -= th_attn_sum
+                th_attn = remains.repeat([1,nh,1])
+                assert remains.min() == 0
+                
+                # th_attn = th_attn.reshape(nh, w_featmap, h_featmap).float()
+                # # interpolate
+                # th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()                
+            else:
+                remains -= th_attn_sum
+                # we keep only a certain percentage of the mass
+                val, idx = torch.sort(attentions)
+                val /= torch.sum(val, dim=2, keepdim=True)
+                cumval = torch.cumsum(val, dim=2)
+                th_attn = cumval > (1 - args.threshold)
+                idx2 = torch.argsort(idx, dim=2)
+                # for head in range(nh):
+                #     th_attn[head] = th_attn[head][idx2[head]]
+                th_attn = torch.gather(th_attn, 2, idx2).float()                
+                
+                th_attn = th_attn * remains
+            th_attn_sum = th_attn.sum(dim=1).unsqueeze(dim=1)
+            
+            th_attn_sum = torch.where(th_attn_sum==0, th_attn_sum, torch.tensor([1.],device=device))
+            th_attn_imgs = th_attn_sum.reshape(bs, 1, w_featmap, h_featmap)
+            th_attn_imgs = nn.functional.interpolate(th_attn_imgs, scale_factor=args.patch_size, mode="nearest")
+            
+            next_img = img * (1-th_attn_imgs.cpu())
+            
             th_attn = th_attn.reshape(nh, w_featmap, h_featmap).float()
             # interpolate
             th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
-
+            
         attentions = attentions.reshape(nh, w_featmap, h_featmap)
         attentions = nn.functional.interpolate(attentions.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
 
@@ -263,15 +343,16 @@ if __name__ == '__main__':
             
         # save attentions heatmaps
         os.makedirs(args.output_dir, exist_ok=True)
-        torchvision.utils.save_image(torchvision.utils.make_grid(img, normalize=True, scale_each=True), os.path.join(args.output_dir, "img"+"_iter"+str(i+1)+".png"))
+        torchvision.utils.save_image(torchvision.utils.make_grid(img, normalize=True, scale_each=True), os.path.join(args.output_dir, "img"+"_iter"+str(i)+".png"))
         for j in range(nh):
-            fname = os.path.join(args.output_dir, "attn-head" + str(j) + "_iter" + str(i+1) + ".png")
+            fname = os.path.join(args.output_dir, "attn-head" + str(j) + "_iter" + str(i) + ".png")
             plt.imsave(fname=fname, arr=attentions[j], format='png')
             print(f"{fname} saved.")
 
         if args.threshold is not None:
-            image = skimage.io.imread(os.path.join(args.output_dir, "img"+"_iter"+str(i+1)+".png"))
+            image = skimage.io.imread(os.path.join(args.output_dir, "img"+"_iter"+str(i)+".png"))
             for j in range(nh):
-                display_instances(image, th_attn[j], fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) + "_iter"+str(i+1)+".png"), blur=False)
+                display_instances(image, th_attn[j], fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) + "_iter"+str(i)+".png"), blur=False)
         
+        img = next_img
         
