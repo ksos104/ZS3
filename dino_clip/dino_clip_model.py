@@ -22,6 +22,7 @@ import neptune.new as neptune
 import os
 from . import vision_transformer as vits
 from dino_clip.third_party import clip
+from dino_clip.modeling.heads.dino_decoder import DINODecoder
 import numpy as np
 
 
@@ -211,13 +212,18 @@ class DINO_CLIP(nn.Module):
         self.mask_layers = nn.Linear(input_dim, 1)
         
         nh = 6
-        self.attn_layers = nn.Sequential(
-            nn.Conv2d(384+nh, (384+nh)//2, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.ReLU(),
-            nn.Conv2d((384+nh)//2, (384+nh)//4, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.ReLU(),
-            nn.Conv2d((384+nh)//4, nh, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.ReLU()
+        # self.attn_layers = nn.Sequential(
+        #     nn.Conv2d(384+nh, (384+nh)//2, kernel_size=3, stride=1, padding=1, bias=False),
+        #     nn.ReLU(),
+        #     nn.Conv2d((384+nh)//2, (384+nh)//4, kernel_size=3, stride=1, padding=1, bias=False),
+        #     nn.ReLU(),
+        #     nn.Conv2d((384+nh)//4, nh, kernel_size=3, stride=1, padding=1, bias=False),
+        #     nn.ReLU()
+        # )
+        
+        ## DINO decoder
+        self.dino_decoder = DINODecoder(
+            norm = "GN",
         )
         
         
@@ -633,8 +639,7 @@ class DINO_CLIP(nn.Module):
             for i in range(self.n_iter):
                 features, attentions = self.model.get_last_selfattention(input_images)
                 features = features[:,1:,:]
-                features_list.append(features)
-
+                
                 bs = attentions.shape[0]
                 nh = attentions.shape[1] # number of head
                 
@@ -652,7 +657,11 @@ class DINO_CLIP(nn.Module):
                         temp_attentions.append(attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
                 attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
                 
-                
+                '''
+                    Decoding
+                '''
+                features, attentions = self.dino_decoder(features, attentions)
+                nh = 1
                 
                 '''
                     Watershed algorithm
@@ -701,13 +710,13 @@ class DINO_CLIP(nn.Module):
                 # attentions_img = self.attn_layers(attentions_img)
                 # attentions = attentions_img.reshape(bs, nh, -1)                
                 
-                
+                features_list.append(features)
                 attentions_list.append(attentions)
 
                 if i == self.n_iter - 1:
                     remains -= th_attn_sum
                     th_attn = remains.repeat([1,nh,1])
-                    assert remains.min() == 0
+                    assert remains.min() >= 0
                 else:
                     remains -= th_attn_sum
                     # we keep only a certain percentage of the mass
@@ -806,8 +815,8 @@ class DINO_CLIP(nn.Module):
 
                 return losses
             else:
-                mask_cls_results = outputs["pred_logits"]
-                mask_pred_results = outputs["pred_masks"]
+                mask_cls_results = outputs["pred_logits"]           ## [bs, n_heads*n_iter, 3600, n_cls+1]
+                mask_pred_results = outputs["pred_masks"]           ## [bs, n_heads*n_iter, 60, 60]
                 
                 ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
                 # mask_pred_results = mask_pred_results.squeeze(-1).squeeze(-1)
@@ -820,6 +829,7 @@ class DINO_CLIP(nn.Module):
                     mode="bilinear",
                     align_corners=False,
                 )
+                self.clip_classification = False
                 if self.clip_classification:
                     ##########################
                     mask_pred_results_224 = F.interpolate(mask_pred_results,
@@ -831,7 +841,7 @@ class DINO_CLIP(nn.Module):
                     mask_pred_results_224 = mask_pred_results_224.unsqueeze(2)
 
                     masked_image_tensors = (images_tensor.unsqueeze(1) * mask_pred_results_224)
-                    cropp_masked_image = True
+                    cropp_masked_image = False
                     # vis_cropped_image = True
                     if cropp_masked_image:
                         # import ipdb; ipdb.set_trace()
@@ -960,10 +970,11 @@ class DINO_CLIP(nn.Module):
                         )
 
                     ## mask_pred_results.shape = [bs, n_iter*3600, 1, 1]
-                    mask_cls_result = mask_cls_result.view(mask_cls_result.shape[0]//3600, 3600, mask_cls_result.shape[1])
-                    # mask_cls_result: [5, 3600, 16] --> [5, 16]
-                    # unq, cnt = mask_cls_result.argmax(dim=2).unique(dim=1, return_counts=True)
+                    if self.clip_classification:
+                        mask_cls_result = mask_cls_result.view(mask_cls_result.shape[0]//3600, 3600, mask_cls_result.shape[1])
+                    ## mask_cls_result: [bs, 3600, n_cls+1] --> [bs, n_cls+1]
                     mask_cls_result = mask_cls_result.mean(dim=1)
+                    # mask_cls_result = mask_cls_result.max(dim=1)[0]
                     
 
                     # semantic segmentation inference

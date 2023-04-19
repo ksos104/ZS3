@@ -147,3 +147,13 @@ def add_mask_former_config(cfg):
     cfg.DINO.IMAGE_SIZE = (480,480)
     cfg.DINO.THRESHOLD = 0.5
     cfg.DINO.NUM_ITER = 5
+    
+    # cfg.MODEL.SEM_SEG_HEAD.IMG_SIZE = (480, 480)
+    # cfg.MODEL.SEM_SEG_HEAD.IN_CH = 384
+    # cfg.MODEL.SEM_SEG_HEAD.EMBED_DIM = 192
+    # cfg.MODEL.SEM_SEG_HEAD.NUM_LAYERS = 3
+    # cfg.MODEL.SEM_SEG_HEAD.NUM_HEADS = 6
+    # cfg.MODEL.SEM_SEG_HEAD.USE_STAGES = 3
+    # cfg.MODEL.SEM_SEG_HEAD.USE_PROJ = True
+    # cfg.MODEL.SEM_SEG_HEAD.CE_LOSS = False
+    # cfg.MODEL.SEM_SEG_HEAD.CROP_TRAIN = False
