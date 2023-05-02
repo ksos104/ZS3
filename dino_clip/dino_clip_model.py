@@ -200,26 +200,8 @@ class DINO_CLIP(nn.Module):
         # input_dim = (self.image_size[0]//self.patch_size) * (self.image_size[1]//self.patch_size) * 384
         input_dim = 384
         self.head = nn.Linear(input_dim, 512)
-        
-        # self.mask_layers = nn.Sequential(
-        #     nn.Conv2d(input_dim, input_dim//2, kernel_size=3, stride=1, padding=1, bias=False),
-        #     nn.ReLU(),
-        #     nn.Conv2d(input_dim//2, input_dim//4, kernel_size=3, stride=1, padding=1, bias=False),
-        #     nn.ReLU(),
-        #     nn.Conv2d(input_dim//4, 1, kernel_size=3, stride=1, padding=1, bias=False),
-        #     nn.ReLU()
-        # )
         self.mask_layers = nn.Linear(input_dim, 1)
-        
         nh = 6
-        # self.attn_layers = nn.Sequential(
-        #     nn.Conv2d(384+nh, (384+nh)//2, kernel_size=3, stride=1, padding=1, bias=False),
-        #     nn.ReLU(),
-        #     nn.Conv2d((384+nh)//2, (384+nh)//4, kernel_size=3, stride=1, padding=1, bias=False),
-        #     nn.ReLU(),
-        #     nn.Conv2d((384+nh)//4, nh, kernel_size=3, stride=1, padding=1, bias=False),
-        #     nn.ReLU()
-        # )
         
         ## DINO decoder
         self.dino_decoder = DINODecoder(
@@ -661,55 +643,18 @@ class DINO_CLIP(nn.Module):
                     Decoding
                 '''
                 features, attentions = self.dino_decoder(features, attentions)
+                ## Select max attention
+                attn_max = torch.max(attentions, dim=-1)[0]
+                max_idx = torch.max(attn_max, dim=-1)[1]
+                temp_attentions = []
+                for i_bs in range(bs):
+                    temp_attentions.append(attentions[i_bs, max_idx[i_bs], ...])
+                attentions = torch.stack(temp_attentions).reshape(bs, 1, -1)
+                ## Mean attentions
+                # attentions = attentions.mean(dim=1).reshape(bs, 1, -1)
                 nh = 1
-                
-                '''
-                    Watershed algorithm
-                '''
-                # ## Select a mask has the highest attention value
-                # from skimage.segmentation import watershed
-                # from skimage.feature import peak_local_max
-                # from scipy import ndimage as ndi
 
-                # def find_consecutive_mask(heatmap):
-                #     heatmap = heatmap.reshape(heatmap.shape[0], heatmap.shape[1], 60, 60)
-                    
-                #     heatmap = heatmap[0,0,...]
-                    
-                #     # Find the local maxima in the heatmap
-                #     # local_maxima = peak_local_max(heatmap.cpu().numpy(), threshold_abs=torch.mean(heatmap.cpu()).numpy(), exclude_border=False, min_distance=60)
-                #     local_maxima = peak_local_max(heatmap.cpu().numpy(), exclude_border=False, min_distance=60)
-                    
-                #     mask = np.zeros(heatmap.shape, dtype=bool)
-                #     mask[tuple(local_maxima.T)] = True
-                #     markers, _ = ndi.label(mask)
-                    
-                #     # Perform watershed segmentation on the heatmap
-                #     labels = watershed(-heatmap.cpu().numpy(), markers=markers, mask=(heatmap >= torch.mean(heatmap)).cpu())
-                #     labels = torch.from_numpy(labels).to(self.device)
-                    
-                #     # Find the label corresponding to the highest peak
-                #     max_label = labels[np.unravel_index(torch.argmax(heatmap).cpu(), heatmap.shape)]
-                    
-                #     # Create a mask that covers the highest peak and its surrounding hill over the threshold
-                #     mask = torch.zeros_like(heatmap).cuda()
-                #     mask[labels == max_label] = 1
-                #     mask[heatmap < torch.mean(heatmap)] = 0
 
-                #     # Convert mask back to a numpy array and return
-                #     # return mask.numpy()
-                #     return mask * heatmap
-
-                # ref_attentions = find_consecutive_mask(attentions)
-            
-                '''
-                    refine attentions through FCN
-                '''
-                # attentions = torch.cat((features.permute(0,2,1), attentions), dim=1)
-                # attentions_img = attentions.reshape(bs, features.shape[-1]+nh, 60, 60)
-                # attentions_img = self.attn_layers(attentions_img)
-                # attentions = attentions_img.reshape(bs, nh, -1)                
-                
                 features_list.append(features)
                 attentions_list.append(attentions)
 
@@ -781,7 +726,7 @@ class DINO_CLIP(nn.Module):
                 outputs = {"pred_logits": outputs_class}
             else:
                 outputs = {}
-            outputs['semantic_vector'] = mask_outputs
+            # outputs['semantic_vector'] = mask_outputs
                         
             mask_inputs = (features_tensor.repeat([1,nh,1,1]) + (th_attns * attentions)).contiguous().view(bs, -1, 384)
             mask_inputs = self.mask_layers(mask_inputs)
@@ -829,7 +774,6 @@ class DINO_CLIP(nn.Module):
                     mode="bilinear",
                     align_corners=False,
                 )
-                self.clip_classification = False
                 if self.clip_classification:
                     ##########################
                     mask_pred_results_224 = F.interpolate(mask_pred_results,
@@ -841,7 +785,7 @@ class DINO_CLIP(nn.Module):
                     mask_pred_results_224 = mask_pred_results_224.unsqueeze(2)
 
                     masked_image_tensors = (images_tensor.unsqueeze(1) * mask_pred_results_224)
-                    cropp_masked_image = False
+                    cropp_masked_image = True
                     # vis_cropped_image = True
                     if cropp_masked_image:
                         # import ipdb; ipdb.set_trace()

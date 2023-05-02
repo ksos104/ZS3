@@ -5,6 +5,7 @@ MODEL:
     IGNORE_VALUE: 255
     NUM_CLASSES: 20
     CLIP_CLASSIFICATION: True
+    # CLIP_CLASSIFICATION: False
     LOSS_WEIGHT: 1.0
     NORM: "GN"
     TRAIN_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/seen_classnames.json"
@@ -37,5 +38,5 @@ DINO:
   CKPT_KEY: 'teacher'
   PATCH_SIZE: 8
   IMAGE_SIZE: (480,480)
-  THRESHOLD: 0.5
+  THRESHOLD: 0.3
   NUM_ITER: 10

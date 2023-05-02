@@ -34,6 +34,8 @@ from PIL import Image
 from dino_clip import vision_transformer as vits
 from dino_clip.third_party import clip
 
+from dino_clip.modeling.heads.dino_decoder import DINODecoder
+
 
 def apply_mask(image, mask, color, alpha=0.5):
     for c in range(3):
@@ -218,7 +220,19 @@ if __name__ == '__main__':
     logit_scale = clip_model.logit_scale.exp()
     
     cls_score = logit_scale * image_features @ features_test.clone().detach().t().half()
-    print("image0: ", class_texts[cls_score.argmax()])
+    # print("image0: ", class_texts[cls_score.argmax()])
+
+    ## DINO decoder
+    dino_decoder = DINODecoder(
+        norm = "GN"
+    ).to(device)
+    model_dict = dino_decoder.state_dict()
+    loaded_dict = torch.load('output_dino_vit_small_voc32_self_attn_dec_nh1_noAttnConv/model_0004999.pth')['model']
+    
+    for k, v in loaded_dict.items():
+        if 'dino_decoder' in k:
+            new_k = '.'.join(k.split('.')[1:])
+            model_dict[new_k] = loaded_dict[k]
 
     num_iter = 10
     bs = img.shape[0]
@@ -226,76 +240,46 @@ if __name__ == '__main__':
     th_attn = torch.zeros((bs,6,3600)).to(device)
     th_attn_sum = torch.zeros((bs,1,3600)).to(device)
     for i in range(num_iter):
-        _, attentions = model.get_last_selfattention(img.to(device))
+        features, attentions = model.get_last_selfattention(img.to(device))
+        features = features[:,1:,:]
 
         bs = attentions.shape[0]
         nh = attentions.shape[1] # number of head
 
         # we keep only the output patch attention
-        attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+        # attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
         
         ## self-attention map                
-        # cls_attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
-        # idx_attentions = torch.argmax(cls_attentions, dim=-1)
-        # attentions = attentions[:, :, 1:, 1:]
-        # # attentions = torch.gather(attentions, dim=2, index=idx_attentions)
+        cls_attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+        idx_attentions = torch.argmax(cls_attentions, dim=-1)
+        attentions = attentions[:, :, 1:, 1:]
+        # attentions = torch.gather(attentions, dim=2, index=idx_attentions)
+        temp_attentions = []
+        for i_bs in range(bs):
+            for i_head in range(nh):
+                temp_attentions.append(attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
+        attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
+        
+        '''
+            Decoding
+        '''
+        features, attentions = dino_decoder(features, attentions)
+        ## Select max attention
+        # attn_max = torch.max(attentions, dim=-1)[0]
+        # max_idx = torch.max(attn_max, dim=-1)[1]
         # temp_attentions = []
         # for i_bs in range(bs):
-        #     for i_head in range(nh):
-        #         temp_attentions.append(attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
-        # attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
-        
-        
-        ###################################################
-        ## Select a mask has the highest attention value
-        # from skimage.segmentation import watershed
-        # from skimage.feature import peak_local_max
-        # from scipy import ndimage as ndi
-
-        # def find_consecutive_mask(heatmap):
-        #     heatmap = heatmap.reshape(heatmap.shape[0], heatmap.shape[1], 60, 60)
-            
-        #     heatmap = heatmap[0,0,...]
-            
-        #     # Find the local maxima in the heatmap
-        #     # local_maxima = peak_local_max(heatmap.cpu().numpy(), threshold_abs=torch.mean(heatmap.cpu()).numpy(), exclude_border=False, min_distance=60)
-        #     local_maxima = peak_local_max(heatmap.cpu().numpy(), exclude_border=False, min_distance=30)
-        #     print(local_maxima)
-            
-        #     '''
-        #         markers를 잘못 뽑는 것 같음
-        #     '''
-        #     mask = np.zeros(heatmap.shape, dtype=bool)
-        #     mask[tuple(local_maxima.T)] = True
-        #     markers, _ = ndi.label(mask)
-            
-        #     # Perform watershed segmentation on the heatmap
-        #     # labels = watershed(-heatmap.cpu().numpy(), markers=markers, mask=(heatmap >= torch.mean(heatmap)).cpu())
-        #     labels = watershed(-heatmap.cpu().numpy(), markers=markers, mask=(heatmap >= 0.0001).cpu())
-        #     labels = torch.from_numpy(labels).to(device)
-            
-        #     # Find the label corresponding to the highest peak
-        #     max_label = labels[np.unravel_index(torch.argmax(heatmap).cpu(), heatmap.shape)]
-            
-        #     # Create a mask that covers the highest peak and its surrounding hill over the threshold
-        #     mask = torch.zeros_like(heatmap).cuda()
-        #     mask[labels == max_label] = 1
-        #     mask[heatmap < torch.mean(heatmap)] = 0
-            
-        #     # Convert mask back to a numpy array and return
-        #     # return mask.numpy()
-        #     return mask * heatmap
-        
-        # nh = 1
-        # attentions = find_consecutive_mask(attentions).reshape(nh, -1)
-        ###################################################
-        
-        
+        #     temp_attentions.append(attentions[i_bs, max_idx[i_bs], ...])
+        # attentions = torch.stack(temp_attentions).reshape(bs, 1, -1)
+        ## Mean attentions
+        attentions = attentions.mean(dim=1).reshape(bs, 1, -1)
+        nh = 1
+                
         if args.threshold is not None:
             if i == num_iter - 1:
                 remains -= th_attn_sum
                 th_attn = remains.repeat([1,nh,1])
-                assert remains.min() == 0
+                assert remains.min() >= 0
                 
                 # th_attn = th_attn.reshape(nh, w_featmap, h_featmap).float()
                 # # interpolate
@@ -303,7 +287,7 @@ if __name__ == '__main__':
             else:
                 remains -= th_attn_sum
                 # we keep only a certain percentage of the mass
-                val, idx = torch.sort(attentions)
+                val, idx = torch.sort(attentions, dim=2)
                 val /= torch.sum(val, dim=2, keepdim=True)
                 cumval = torch.cumsum(val, dim=2)
                 th_attn = cumval > (1 - args.threshold)

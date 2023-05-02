@@ -107,6 +107,9 @@ if __name__ == "__main__":
     cfg = setup_cfg(args)
 
     demo = VisualizationDemo(cfg)
+    
+    if args.output:
+        os.makedirs(args.output, exist_ok=True)
 
     if args.input:
         if len(args.input) == 1:

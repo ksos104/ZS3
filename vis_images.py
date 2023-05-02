@@ -8,10 +8,13 @@ import PIL
 root_list = [
     '/mnt/server14_hard0/msson/ZegFormer/results_vis_gt_voc',
     '/mnt/server14_hard0/msson/ZegFormer/results_vis_voc',
-    'results_vis_dino_vit_small_nh6',
+    # 'results_vis_dino_vit_small_nh6',
     # 'results_vis_dino_vit_small_head_max',
     # 'results_vis_dino_vit_small_matcher_sum_norm',
-    'results_vis_dino_vit_small_self_attn',
+    # 'results_vis_dino_vit_small_self_attn',
+    # 'results_vis_dino_vit_small_self_attn',
+    'results_vis_dino_vit_small_self_attn_dec_nh1_sm',
+    'results_vis_dino_vit_small_self_attn_dec_nh1_noAttnConv'
 ]
 
 save_path = 'vis_comparison'

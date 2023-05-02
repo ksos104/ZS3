@@ -8,7 +8,7 @@ MODEL:
     NORM: "GN"
     TRAIN_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/seen_classnames.json"
     TEST_CLASS_JSON: "/mnt/server14_hard1/msson/datasets/zs3_datasets/VOCZERO/all_classnames.json"
-    
+
 #  BACKBONE:
 #    NAME: "build_resnet_deeplab_backbone"
   # WEIGHTS: "pretrained/R-101.pkl"
@@ -34,5 +34,5 @@ DINO:
   CKPT_KEY: 'teacher'
   PATCH_SIZE: 8
   IMAGE_SIZE: (480,480)
-  THRESHOLD: 0.5
+  THRESHOLD: 0.3
   NUM_ITER: 10
