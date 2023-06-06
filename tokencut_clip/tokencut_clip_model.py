@@ -15,20 +15,25 @@ from detectron2.structures import ImageList
 from .modeling.criterion import SetCriterion
 from .modeling.matcher import HungarianMatcher
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize, transforms
-from dino_clip.third_party import imagenet_templates
+from tokencut_clip.third_party import imagenet_templates
 
 import neptune.new as neptune
 
 import os
-from . import vision_transformer as vits
-from dino_clip.third_party import clip
-from dino_clip.modeling.heads.dino_decoder import DINODecoder
+# from . import vision_transformer as vits
+from tokencut_clip.third_party import clip
+from tokencut_clip.modeling.heads.dino_decoder import DINODecoder
 import numpy as np
+
+from tokencut_clip import dino
+import tokencut_clip.object_discovery as tokencut
+from tokencut_clip import bilateral_solver
+from tokencut_clip import metric
 
 
 
 @META_ARCH_REGISTRY.register()
-class DINO_CLIP(nn.Module):
+class TOKENCUT_CLIP(nn.Module):
     """
     Main class for mask classification semantic segmentation architectures.
     """
@@ -162,45 +167,37 @@ class DINO_CLIP(nn.Module):
         self.threshold = threshold
         self.n_iter = n_iter
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        
         # build model
-        self.model = vits.__dict__[arch](patch_size=patch_size, num_classes=0)
+        print("Please use the `--pretrained_weights` argument to indicate the path of the checkpoint to evaluate.")
+        url = None
+        if arch == "vit_small" and patch_size == 16:
+            url = "dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth"
+            feat_dim = 384
+        elif arch == "vit_small" and patch_size == 8:
+            url = "dino_deitsmall8_300ep_pretrain/dino_deitsmall8_300ep_pretrain.pth"  # model used for visualizations in our paper
+            feat_dim = 384
+        elif arch == "vit_base" and patch_size == 16:
+            url = "dino_vitbase16_pretrain/dino_vitbase16_pretrain.pth"
+            feat_dim = 768
+        elif arch == "vit_base" and patch_size == 8:
+            url = "dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth"
+            feat_dim = 768
+            
+        ## TokenCut Model
+        vit_feat = 'k'                ## [k, q, v, kqv]   
+        self.tau = 0.2
+        self.sigma_spatial = 16
+        self.sigma_luma = 16
+        self.sigma_chroma = 8
+        
+        self.model = dino.ViTFeat(url, feat_dim, arch, vit_feat, patch_size)
         for p in self.model.parameters():
             p.requires_grad = False
         self.model.eval()
         self.model.to(device)
-        if os.path.isfile(pretrained_weights):
-            state_dict = torch.load(pretrained_weights, map_location="cpu")
-            if checkpoint_key is not None and checkpoint_key in state_dict:
-                print(f"Take key {checkpoint_key} in provided checkpoint dict")
-                state_dict = state_dict[checkpoint_key]
-            # remove `module.` prefix
-            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-            # remove `backbone.` prefix induced by multicrop wrapper
-            state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
-            msg = self.model.load_state_dict(state_dict, strict=False)
-            print('Pretrained weights found at {} and loaded with msg: {}'.format(pretrained_weights, msg))
-        else:
-            print("Please use the `--pretrained_weights` argument to indicate the path of the checkpoint to evaluate.")
-            url = None
-            if arch == "vit_small" and patch_size == 16:
-                url = "dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth"
-            elif arch == "vit_small" and patch_size == 8:
-                url = "dino_deitsmall8_300ep_pretrain/dino_deitsmall8_300ep_pretrain.pth"  # model used for visualizations in our paper
-            elif arch == "vit_base" and patch_size == 16:
-                url = "dino_vitbase16_pretrain/dino_vitbase16_pretrain.pth"
-            elif arch == "vit_base" and patch_size == 8:
-                url = "dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth"
-            if url is not None:
-                print("Since no pretrained weights have been provided, we load the reference pretrained DINO weights.")
-                state_dict = torch.hub.load_state_dict_from_url(url="https://dl.fbaipublicfiles.com/dino/" + url)
-                self.model.load_state_dict(state_dict, strict=True)
-            else:
-                print("There is no reference weights available for this model => We use random weights.")
-        
-        self.mode = 'decoder'       ## decoder / ref_fusion
-        
-        # input_dim = (self.image_size[0]//self.patch_size) * (self.image_size[1]//self.patch_size) * 384
-        self.input_dim = 384
+
+        self.input_dim = feat_dim
         # if self.mode == 'decoder':
         #     self.head = nn.Linear(self.input_dim, 512)
         #     self.mask_layers = nn.Linear(self.input_dim, 1)
@@ -208,6 +205,7 @@ class DINO_CLIP(nn.Module):
         #     self.cam_head = nn.Conv2d(self.input_dim, self.input_dim, kernel_size=3, stride=1, padding=1)
         
         self.head = nn.Linear(self.input_dim, 512)
+        # self.head = nn.Conv2d(self.input_dim, 512, kernel_size=3, stride=1, padding=1)
         self.mask_layers = nn.Linear(self.input_dim, 1)
         self.cam_head = nn.Conv2d(self.input_dim, self.input_dim, kernel_size=3, stride=1, padding=1)
         
@@ -215,8 +213,7 @@ class DINO_CLIP(nn.Module):
         self.dino_decoder = DINODecoder(
             norm = "GN",
         )
-        
-        
+                
         ## CLIP init
         self.num_classes = num_classes
         self.mask_classification = mask_classification
@@ -411,6 +408,39 @@ class DINO_CLIP(nn.Module):
     def device(self):
         return self.pixel_mean.device
 
+    @classmethod
+    def get_tokencut_binary_map(self, input_images, backbone, patch_size, tau) :
+        # I = Image.open(img_pth).convert('RGB')
+        # I_resize, w, h, feat_w, feat_h = utils.resize_pil(I, patch_size)
+
+        # tensor = ToTensor(I_resize).unsqueeze(0).cuda()
+        # feat = backbone(tensor)[0]
+        bs, h, w = input_images.shape[0], input_images.shape[-1], input_images.shape[-2]
+        feat_h = h // patch_size
+        feat_w = w // patch_size
+        outputs, feat = backbone(input_images)
+
+        # feat = feat[0]
+        
+        ## Batch-wise: feat.shape = [bs, 3600, 3600]
+        # seed_list = []
+        # bipartition_list = []
+        # eigvec_list = []
+        
+        # for i in range(bs):
+        #     seed, bipartition, eigvec = tokencut.ncut(feat[i], [feat_h, feat_w], [patch_size, patch_size], [h,w], tau)
+        #     bipartition_list.append(bipartition)
+        #     eigvec_list.append(eigvec)
+                        
+        seed, bipartition, eigvec = tokencut.ncut(feat, [bs, feat_h, feat_w], [patch_size, patch_size], [h,w], tau)
+            
+        # bipartition = torch.tensor(bipartition_list)
+        # eigvec = torch.tensor(eigvec_list)
+        # bipartition = torch.stack(bipartition_list, dim=0)
+        # eigvec = torch.stack(eigvec_list, dim=0)    
+        
+        return outputs, bipartition, eigvec
+
     def forward(self, batched_inputs, tsne=False, mask_vis=False):
         """
         Args:
@@ -444,15 +474,6 @@ class DINO_CLIP(nn.Module):
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         # note, after from_tensors, the images are padded, so the shape of images and batched_inputs[0]["image"] are different
         # TODO: check the add_mask operation
-        # add_mask = True
-        add_mask = False
-        if add_mask:
-            if self.training:
-                ori_sizes = [x["ori_size"] for x in batched_inputs]
-            else:
-                ori_sizes = [(x.shape[1], x.shape[2]) for x in images]
-        else:
-            ori_sizes = None
 
         images = ImageList.from_tensors(images, self.size_divisibility)        
         
@@ -463,289 +484,95 @@ class DINO_CLIP(nn.Module):
         w_featmap = input_images.shape[-2] // self.patch_size
         h_featmap = input_images.shape[-1] // self.patch_size
         
-        th_attn_list = []
         features_list = []
         mask_output_list = []
         attentions_list = []
-        threshold = self.threshold
+        binary_attn_list = []
         
-        if self.mode == 'decoder':
-            '''
-                Use decoder
-                features.shape = [bs, 3600, 384]
-            '''
-            if threshold is not None:
-                bs = images.tensor.shape[0]
-                remains = torch.ones((bs,1,3600)).to(self.device)
-                th_attn = torch.zeros((bs,6,3600)).to(self.device)
-                th_attn_sum = torch.zeros((bs,1,3600)).to(self.device)
-            for i in range(self.n_iter):
-                features, attentions = self.model.get_last_selfattention(input_images)
-                features = features[:,1:,:]
-                
-                attentions = torch.mean(attentions, dim=1, keepdim=True)
-                
-                cls_attentions = attentions[:, :, 0, 1:]
-                patch_attentions = attentions[:, :, 1:, 1:]
-                
-                bs = attentions.shape[0]
-                nh = attentions.shape[1] # number of head
-                
-                # we keep only the output patch attention
-                # attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
-                
-                ## self-attention map
-                idx_attentions = torch.argmax(cls_attentions, dim=-1)
-                temp_attentions = []
-                for i_bs in range(bs):
-                    for i_head in range(nh):
-                        temp_attentions.append(patch_attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
-                self_attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
-                
-                attentions = cls_attentions * self_attentions
-                
-                '''
-                    Decoding
-                '''
-                features, attentions = self.dino_decoder(features, attentions)
-                ## Select max attention
-                attn_max = torch.max(attentions, dim=-1)[0]
-                max_idx = torch.max(attn_max, dim=-1)[1]
-                temp_attentions = []
-                for i_bs in range(bs):
-                    temp_attentions.append(attentions[i_bs, max_idx[i_bs], ...])
-                attentions = torch.stack(temp_attentions).reshape(bs, 1, -1)
-                ## Mean attentions
-                # attentions = attentions.mean(dim=1).reshape(bs, 1, -1)
-                nh = 1
+        '''
+            Use decoder
+            features.shape = [bs, 3600, 384]
+        '''
+        bs = images.tensor.shape[0]
+        nh = 1
+        remains = torch.ones((bs,self.image_size[0],self.image_size[1])).to(self.device)
+        for i in range(self.n_iter):       
+            features, bipartition, eigvec = self.get_tokencut_binary_map(input_images, self.model, self.patch_size, self.tau)
 
+            bipartition = bipartition * remains
 
-                features_list.append(features)
-                attentions_list.append(attentions)
-
-                if i == self.n_iter - 1:
-                    remains -= th_attn_sum
-                    th_attn = remains.repeat([1,nh,1])
-                    assert remains.min() >= 0
-                else:
-                    remains -= th_attn_sum
-                    # we keep only a certain percentage of the mass
-                    val, idx = torch.sort(attentions, dim=2)
-                    val /= torch.sum(val, dim=2, keepdim=True)
-                    cumval = torch.cumsum(val, dim=2)
-                    th_attn = cumval > (1 - threshold)
-                    idx2 = torch.argsort(idx, dim=2)
-                    # for head in range(nh):
-                        # th_attn[:,head] = th_attn[:,head][idx2[head]]
-                    th_attn = torch.gather(th_attn, 2, idx2).float()
-                    # Eliminate elements chosen before
-                    th_attn = th_attn * remains
-                th_attn_sum = th_attn.sum(dim=1).unsqueeze(dim=1)
-
-                th_attn_list.append(th_attn)
+            output_solver, binary_solver = bilateral_solver.bilateral_solver_output(input_images, bipartition, sigma_spatial = self.sigma_spatial, sigma_luma = self.sigma_luma, sigma_chroma = self.sigma_chroma)
+            
+            if metric.IoU(bipartition, binary_solver) < 0.5:
+                # binary_solver = binary_solver * -1    
+                binary_solver = bipartition        
                 
-                th_attn_sum = torch.where(th_attn_sum==0, th_attn_sum, torch.tensor([1.],device=self.device))
-                th_attn_imgs = th_attn_sum.reshape(bs, 1, w_featmap, h_featmap)
-                th_attn_imgs = nn.functional.interpolate(th_attn_imgs, scale_factor=self.patch_size, mode="nearest")
-                
-                input_images = input_images * (1-th_attn_imgs)
-                
-                masked_features = ((th_attn * attentions).unsqueeze(dim=-1) + features.unsqueeze(dim=1).repeat([1,nh,1,1]))
-                # masked_features = (attentions.unsqueeze(dim=-1) * features.unsqueeze(dim=1).repeat([1,nh,1,1]))
-                mask_output = self.head(masked_features)
-                mask_output_list.append(mask_output)
-            
-            th_attns = torch.concat(th_attn_list, dim=1).unsqueeze(dim=-1)
-            features_tensor = torch.stack(features_list, dim=1)
-            mask_outputs = torch.concat(mask_output_list, dim=1)
-            attentions = torch.concat(attentions_list, dim=1).unsqueeze(dim=-1)
-            
-            ## Attentions refinement
-            bin_attns = th_attns * attentions
-            bin_attns = bin_attns.reshape(bs, nh, self.n_iter, -1, 1)
-            bin_attns = (bin_attns == bin_attns.max(dim=1, keepdim=True)[0]).to(bin_attns)
-            bin_attns = bin_attns.reshape(bs, nh*self.n_iter, -1, 1)
-            attentions = bin_attns * attentions
-            
-            ## Save th_attns as text
-            # if not self.training:
-            #     temp = th_attns.squeeze()
-            #     temp = temp.view(self.n_iter, 60, 60)
-            #     for i in range(self.n_iter):
-            #         np.savetxt('temp{}.txt'.format(i), temp[i,...].cpu().numpy().astype(int), fmt='%d')
-            
-            ## ZegOT: Global Text Alignment
-            # cls_tokens_tensor = mask_outputs
-            # align_factor = self.align_layer(torch.cat(((cls_tokens_tensor*self.text_features), self.text_features)))
-            
-            
-            if self.mask_classification:
-                mask_outputs = mask_outputs / mask_outputs.norm(dim=-1, keepdim=True)
-                logit_scale = self.logit_scale.exp()
-                if self.training:
-                    cls_score = logit_scale * mask_outputs @ self.text_features.clone().detach().t()
-                else:
-                    cls_score = logit_scale * mask_outputs @ self.text_features_test.clone().detach().t()
-
-                bg_score = logit_scale * mask_outputs @ self.bg_feature.t()
-                outputs_class = torch.cat((cls_score, bg_score), -1)
-                outputs = {"pred_logits": outputs_class}
+            if i == self.n_iter - 1:
+                binary_solver = remains
             else:
-                outputs = {}
-            # outputs['semantic_vector'] = mask_outputs
-                        
-            mask_inputs = (features_tensor.repeat([1,nh,1,1]) + (th_attns * attentions)).contiguous().view(bs, -1, 384)
-            # mask_inputs = (features_tensor.repeat([1,nh,1,1]) * attentions).contiguous().view(bs, -1, 384)
-            mask_inputs = self.mask_layers(mask_inputs)
+                remains = (remains * (1-binary_solver*1))   
             
-            pred_masks = mask_inputs.contiguous().view(bs, self.n_iter*nh, w_featmap, h_featmap)
-            outputs['pred_masks'] = pred_masks
-        elif self.mode == 'ref_fusion':
-            '''
-                Use refined fusion maps
-            '''
-            if threshold is not None:
-                bs = images.tensor.shape[0]
-                remains = torch.ones((bs,1,3600)).to(self.device)
-                th_attn = torch.zeros((bs,6,3600)).to(self.device)
-                th_attn_sum = torch.zeros((bs,1,3600)).to(self.device)
-            for i in range(self.n_iter):
-                features, attentions = self.model.get_last_selfattention(input_images)
-                features = features[:,1:,:]                 ## features.shape = [bs, 3600, 384]
-                
-                '''
-                    feature to CAM
-                '''
-                features = features.reshape(bs, 60, 60, features.shape[-1])     ## features.shape = [bs, 60, 60, 384]
-                features = features.permute(0, 3, 1, 2)
-                features = features.contiguous()
-                features = self.cam_head(features)
-                
-                features = features.detach().clone()
-                features = F.relu(features)
-                
-                attentions = torch.mean(attentions, dim=1, keepdim=True)
-                
-                cls_attentions = attentions[:, :, 0, 1:]
-                patch_attentions = attentions[:, :, 1:, 1:]
-                
-                cls_attn_maps = cls_attentions.unsqueeze(dim=2).reshape(bs, 1, 60, 60)
-                
-                cams = cls_attn_maps * features
-                
-                ref_fusion_maps = torch.matmul(patch_attentions, cams.reshape(bs, features.shape[1], -1, 1)).reshape(bs, features.shape[1], 60, 60)
-                features = ref_fusion_maps.reshape(bs, -1, 3600).permute(0,2,1)
-                
-                bs = attentions.shape[0]
-                nh = attentions.shape[1] # number of head
-                
-                # we keep only the output patch attention
-                # attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
-                
-                ## self-attention map
-                idx_attentions = torch.argmax(cls_attentions, dim=-1)
-                temp_attentions = []
-                for i_bs in range(bs):
-                    for i_head in range(nh):
-                        temp_attentions.append(patch_attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
-                attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
-                
-                '''
-                    Decoding
-                '''
-                # features, attentions = self.dino_decoder(features, attentions)
-                # ## Select max attention
-                # attn_max = torch.max(attentions, dim=-1)[0]
-                # max_idx = torch.max(attn_max, dim=-1)[1]
-                # temp_attentions = []
-                # for i_bs in range(bs):
-                #     temp_attentions.append(attentions[i_bs, max_idx[i_bs], ...])
-                # attentions = torch.stack(temp_attentions).reshape(bs, 1, -1)
-                # ## Mean attentions
-                # # attentions = attentions.mean(dim=1).reshape(bs, 1, -1)
-                # nh = 1
+            output_solver = F.interpolate(output_solver.unsqueeze(1), size=(h_featmap,w_featmap), mode='bilinear')
+            # output_solver = F.interpolate(output_solver.unsqueeze(0).unsqueeze(0), size=(h_featmap,w_featmap), mode='bilinear')
 
-                features_list.append(features)
-                attentions_list.append(attentions)
-
-                if i == self.n_iter - 1:
-                    remains -= th_attn_sum
-                    th_attn = remains.repeat([1,nh,1])
-                    assert remains.min() >= 0
-                else:
-                    remains -= th_attn_sum
-                    # we keep only a certain percentage of the mass
-                    val, idx = torch.sort(attentions, dim=2)
-                    val /= torch.sum(val, dim=2, keepdim=True)
-                    cumval = torch.cumsum(val, dim=2)
-                    th_attn = cumval > (1 - threshold)
-                    idx2 = torch.argsort(idx, dim=2)
-                    # for head in range(nh):
-                        # th_attn[:,head] = th_attn[:,head][idx2[head]]
-                    th_attn = torch.gather(th_attn, 2, idx2).float()
-                    # Eliminate elements chosen before
-                    th_attn = th_attn * remains
-                th_attn_sum = th_attn.sum(dim=1).unsqueeze(dim=1)
-
-                th_attn_list.append(th_attn)
-                
-                th_attn_sum = torch.where(th_attn_sum==0, th_attn_sum, torch.tensor([1.],device=self.device))
-                th_attn_imgs = th_attn_sum.reshape(bs, 1, w_featmap, h_featmap)
-                th_attn_imgs = nn.functional.interpolate(th_attn_imgs, scale_factor=self.patch_size, mode="nearest")
-                
-                input_images = input_images * (1-th_attn_imgs)
-                
-                masked_features = ((th_attn * attentions).unsqueeze(dim=-1) + features.unsqueeze(dim=1).repeat([1,nh,1,1]))
-                # masked_features = (attentions.unsqueeze(dim=-1) * features.unsqueeze(dim=1).repeat([1,nh,1,1]))
-                mask_output = self.head(masked_features)
-                mask_output_list.append(mask_output)
-            
-            th_attns = torch.concat(th_attn_list, dim=1).unsqueeze(dim=-1)
-            features_tensor = torch.stack(features_list, dim=1)
-            mask_outputs = torch.concat(mask_output_list, dim=1)
-            attentions = torch.concat(attentions_list, dim=1).unsqueeze(dim=-1)
-            
-            ## Attentions refinement
-            bin_attns = th_attns * attentions
-            bin_attns = bin_attns.reshape(bs, nh, self.n_iter, -1, 1)
-            bin_attns = (bin_attns == bin_attns.max(dim=1, keepdim=True)[0]).to(bin_attns)
-            bin_attns = bin_attns.reshape(bs, nh*self.n_iter, -1, 1)
-            attentions = bin_attns * attentions
-            
-            ## Save th_attns as text
-            # if not self.training:
-            #     temp = th_attns.squeeze()
-            #     temp = temp.view(self.n_iter, 60, 60)
-            #     for i in range(self.n_iter):
-            #         np.savetxt('temp{}.txt'.format(i), temp[i,...].cpu().numpy().astype(int), fmt='%d')
-            
-            ## ZegOT: Global Text Alignment
-            # cls_tokens_tensor = mask_outputs
-            # align_factor = self.align_layer(torch.cat(((cls_tokens_tensor*self.text_features), self.text_features)))
-            
-            
-            if self.mask_classification:
-                mask_outputs = mask_outputs / mask_outputs.norm(dim=-1, keepdim=True)
-                logit_scale = self.logit_scale.exp()
-                if self.training:
-                    cls_score = logit_scale * mask_outputs @ self.text_features.clone().detach().t()
-                else:
-                    cls_score = logit_scale * mask_outputs @ self.text_features_test.clone().detach().t()
-
-                bg_score = logit_scale * mask_outputs @ self.bg_feature.t()
-                outputs_class = torch.cat((cls_score, bg_score), -1)
-                outputs = {"pred_logits": outputs_class}
+            bipartition = F.interpolate(bipartition.unsqueeze(1), size=(h_featmap,w_featmap), mode='nearest')
+            # binary_solver = F.interpolate((binary_solver*1.).unsqueeze(1), size=(h_featmap,w_featmap), mode='nearest')
+            if binary_solver.shape[0] == self.image_size[0]:
+                binary_solver = F.interpolate((binary_solver*1.).unsqueeze(0).unsqueeze(0), size=(h_featmap,w_featmap), mode='nearest')
             else:
-                outputs = {}
-            # outputs['semantic_vector'] = mask_outputs
+                binary_solver = F.interpolate((binary_solver*1.).unsqueeze(1), size=(h_featmap,w_featmap), mode='nearest')
                         
-            mask_inputs = (features_tensor.repeat([1,nh,1,1]) + (th_attns * attentions)).contiguous().view(bs, -1, 384)
-            # mask_inputs = (features_tensor.repeat([1,nh,1,1]) * attentions).contiguous().view(bs, -1, 384)
-            mask_inputs = self.mask_layers(mask_inputs)
+            features = features[:,1:,:].to(torch.float)
+            attentions = output_solver.to(torch.float)
             
-            pred_masks = mask_inputs.contiguous().view(bs, self.n_iter*nh, w_featmap, h_featmap)
-            outputs['pred_masks'] = pred_masks
+            '''
+                Decoding
+            '''
+            features, attentions = self.dino_decoder(features, attentions)
 
+            features_list.append(features)
+            attentions_list.append(attentions)
+            binary_attn_list.append(binary_solver)
+
+            input_images = input_images * remains.to(torch.float).unsqueeze(dim=1)
+            
+            masked_features = ((binary_solver.reshape(bs,nh,-1).to(torch.float) * attentions).unsqueeze(dim=-1) + features.unsqueeze(dim=1).repeat([1,nh,1,1]))
+            mask_output = self.head(masked_features)
+            mask_output_list.append(mask_output)
+        
+        binary_attns = torch.concat(binary_attn_list, dim=1).unsqueeze(dim=-1)
+        features_tensor = torch.stack(features_list, dim=1)
+        mask_outputs = torch.concat(mask_output_list, dim=1)
+        attentions = torch.concat(attentions_list, dim=1).unsqueeze(dim=-1)
+        
+        ## Attentions refinement
+        # bin_attns = binary_attns * attentions
+        # bin_attns = bin_attns.reshape(bs, nh, self.n_iter, -1, 1)
+        # bin_attns = (bin_attns == bin_attns.max(dim=1, keepdim=True)[0]).to(bin_attns)
+        # bin_attns = bin_attns.reshape(bs, nh*self.n_iter, -1, 1)
+        # attentions = bin_attns * attentions
+        
+        if self.mask_classification:
+            mask_outputs = mask_outputs / mask_outputs.norm(dim=-1, keepdim=True)
+            logit_scale = self.logit_scale.exp()
+            if self.training:
+                cls_score = logit_scale * mask_outputs @ self.text_features.clone().detach().t()
+            else:
+                cls_score = logit_scale * mask_outputs @ self.text_features_test.clone().detach().t()
+
+            bg_score = logit_scale * mask_outputs @ self.bg_feature.t()
+            outputs_class = torch.cat((cls_score, bg_score), -1)
+            outputs = {"pred_logits": outputs_class}
+        else:
+            outputs = {}
+        # outputs['semantic_vector'] = mask_outputs
+                    
+        mask_inputs = (features_tensor.repeat([1,nh,1,1]) + (binary_attns.reshape(bs,self.n_iter,-1,1).to(torch.float) * attentions)).contiguous().view(bs, -1, 384)
+        mask_inputs = self.mask_layers(mask_inputs)
+        
+        pred_masks = mask_inputs.contiguous().view(bs, self.n_iter*nh, w_featmap, h_featmap)
+        outputs['pred_masks'] = pred_masks
+            
         ## Training or Inference
         if self.training:
             if "instances" in batched_inputs[0]:

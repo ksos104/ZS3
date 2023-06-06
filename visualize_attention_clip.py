@@ -93,7 +93,7 @@ def display_instances(image, mask, fname="test", figsize=(5, 5), blur=False, con
                 ax.add_patch(p)
     ax.imshow(masked_image.astype(np.uint8), aspect='auto')
     fig.savefig(fname)
-    print(f"{fname} saved.")
+    # print(f"{fname} saved.")
     return
 
 
@@ -222,68 +222,196 @@ if __name__ == '__main__':
     cls_score = logit_scale * image_features @ features_test.clone().detach().t().half()
     # print("image0: ", class_texts[cls_score.argmax()])
 
-    ## DINO decoder
-    dino_decoder = DINODecoder(
-        norm = "GN"
-    ).to(device)
-    model_dict = dino_decoder.state_dict()
-    loaded_dict = torch.load('output_dino_vit_small_voc32_self_attn_dec_nh1_noAttnConv/model_0004999.pth')['model']
-    
-    for k, v in loaded_dict.items():
-        if 'dino_decoder' in k:
-            new_k = '.'.join(k.split('.')[1:])
-            model_dict[new_k] = loaded_dict[k]
+    mode = 'ref_fusion'        ## decoder / ref_fusion
 
-    num_iter = 10
-    bs = img.shape[0]
-    remains = torch.ones((bs,1,3600)).to(device)
-    th_attn = torch.zeros((bs,6,3600)).to(device)
-    th_attn_sum = torch.zeros((bs,1,3600)).to(device)
-    for i in range(num_iter):
-        features, attentions = model.get_last_selfattention(img.to(device))
-        features = features[:,1:,:]
-
-        bs = attentions.shape[0]
-        nh = attentions.shape[1] # number of head
-
-        # we keep only the output patch attention
-        # attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+    if mode  == 'decoder':
+        ## DINO decoder
+        dino_decoder = DINODecoder(
+            norm = "GN"
+        ).to(device)
+        model_dict = dino_decoder.state_dict()
+        loaded_dict = torch.load('output_dino_vit_small_voc32_self_attn_dec_nh1_noAttnConv/model_0004999.pth')['model']
         
-        ## self-attention map                
-        cls_attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
-        idx_attentions = torch.argmax(cls_attentions, dim=-1)
-        attentions = attentions[:, :, 1:, 1:]
-        # attentions = torch.gather(attentions, dim=2, index=idx_attentions)
-        temp_attentions = []
-        for i_bs in range(bs):
-            for i_head in range(nh):
-                temp_attentions.append(attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
-        attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
+        for k, v in loaded_dict.items():
+            if 'dino_decoder' in k:
+                new_k = '.'.join(k.split('.')[1:])
+                model_dict[new_k] = loaded_dict[k]
         
-        '''
-            Decoding
-        '''
-        features, attentions = dino_decoder(features, attentions)
-        ## Select max attention
-        # attn_max = torch.max(attentions, dim=-1)[0]
-        # max_idx = torch.max(attn_max, dim=-1)[1]
-        # temp_attentions = []
-        # for i_bs in range(bs):
-        #     temp_attentions.append(attentions[i_bs, max_idx[i_bs], ...])
-        # attentions = torch.stack(temp_attentions).reshape(bs, 1, -1)
-        ## Mean attentions
-        attentions = attentions.mean(dim=1).reshape(bs, 1, -1)
-        nh = 1
+        num_iter = 10
+        bs = img.shape[0]
+        remains = torch.ones((bs,1,3600)).to(device)
+        th_attn = torch.zeros((bs,6,3600)).to(device)
+        th_attn_sum = torch.zeros((bs,1,3600)).to(device)
+        for i in range(num_iter):
+            features, attentions = model.get_last_selfattention(img.to(device))
+            features = features[:,1:,:]
+
+            bs = attentions.shape[0]
+            nh = attentions.shape[1] # number of head
+
+            # we keep only the output patch attention
+            # attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+            
+            ## self-attention map                
+            cls_attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+            idx_attentions = torch.argmax(cls_attentions, dim=-1)
+            attentions = attentions[:, :, 1:, 1:]
+            # attentions = torch.gather(attentions, dim=2, index=idx_attentions)
+            temp_attentions = []
+            for i_bs in range(bs):
+                for i_head in range(nh):
+                    temp_attentions.append(attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
+            attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
+            
+            '''
+                Decoding
+            '''
+            features, attentions = dino_decoder(features, attentions)
+            ## Select max attention
+            attn_max = torch.max(attentions, dim=-1)[0]
+            max_idx = torch.max(attn_max, dim=-1)[1]
+            temp_attentions = []
+            for i_bs in range(bs):
+                temp_attentions.append(attentions[i_bs, max_idx[i_bs], ...])
+            attentions = torch.stack(temp_attentions).reshape(bs, 1, -1)
+            ## Mean attentions
+            # attentions = attentions.mean(dim=1).reshape(bs, 1, -1)
+            nh = 1
+                    
+            if args.threshold is not None:
+                if i == num_iter - 1:
+                    remains -= th_attn_sum
+                    th_attn = remains.repeat([1,nh,1])
+                    assert remains.min() >= 0
+                    
+                    # th_attn = th_attn.reshape(nh, w_featmap, h_featmap).float()
+                    # # interpolate
+                    # th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()                
+                else:
+                    remains -= th_attn_sum
+                    # we keep only a certain percentage of the mass
+                    val, idx = torch.sort(attentions, dim=2)
+                    val /= torch.sum(val, dim=2, keepdim=True)
+                    cumval = torch.cumsum(val, dim=2)
+                    th_attn = cumval > (1 - args.threshold)
+                    idx2 = torch.argsort(idx, dim=2)
+                    # for head in range(nh):
+                    #     th_attn[head] = th_attn[head][idx2[head]]
+                    th_attn = torch.gather(th_attn, 2, idx2).float()                
+                    
+                    th_attn = th_attn * remains
+                th_attn_sum = th_attn.sum(dim=1).unsqueeze(dim=1)
                 
-        if args.threshold is not None:
+                th_attn_sum = torch.where(th_attn_sum==0, th_attn_sum, torch.tensor([1.],device=device))
+                th_attn_imgs = th_attn_sum.reshape(bs, 1, w_featmap, h_featmap)
+                th_attn_imgs = nn.functional.interpolate(th_attn_imgs, scale_factor=args.patch_size, mode="nearest")
+                
+                next_img = img * (1-th_attn_imgs.cpu())
+                
+                th_attn = th_attn.reshape(nh, w_featmap, h_featmap).float()
+                # interpolate
+                th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
+                
+            attentions = attentions.reshape(nh, w_featmap, h_featmap)
+            attentions = nn.functional.interpolate(attentions.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
+            
+            # save attentions heatmaps
+            os.makedirs(args.output_dir, exist_ok=True)
+            torchvision.utils.save_image(torchvision.utils.make_grid(img, normalize=True, scale_each=True), os.path.join(args.output_dir, "img"+"_iter"+str(i)+".png"))
+            for j in range(nh):
+                fname = os.path.join(args.output_dir, "attn-head" + str(j) + "_iter" + str(i) + ".png")
+                plt.imsave(fname=fname, arr=attentions[j], format='png')
+                print(f"{fname} saved.")
+
+            if args.threshold is not None:
+                image = skimage.io.imread(os.path.join(args.output_dir, "img"+"_iter"+str(i)+".png"))
+                for j in range(nh):
+                    display_instances(image, th_attn[j], fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) + "_iter"+str(i)+".png"), blur=False)
+            
+            img = next_img
+    elif mode == 'ref_fusion':
+        '''
+            Use refined fusion maps
+        '''
+        from torch.nn import functional as F
+        
+        cam_head = nn.Conv2d(384, 384, kernel_size=3, stride=1, padding=1).to(device)
+        
+        
+        num_iter = 10
+        bs = img.shape[0]
+        remains = torch.ones((bs,1,3600)).to(device)
+        th_attn = torch.zeros((bs,6,3600)).to(device)
+        th_attn_sum = torch.zeros((bs,1,3600)).to(device)
+        th_attn_imgs = torch.zeros((bs,1,60,60)).to(device)
+        
+        for i in range(num_iter):
+            features, attentions = model.get_last_selfattention(img.to(device))
+            features = features[:,1:,:]                 ## features.shape = [bs, 3600, 384]
+            
+            '''
+                feature to CAM
+            '''
+            features = features.reshape(bs, 60, 60, features.shape[-1])     ## features.shape = [bs, 60, 60, 384]
+            features = features.permute(0, 3, 1, 2)
+            features = features.contiguous()
+            features = cam_head(features)
+            
+            features = features.detach().clone()
+            features = F.relu(features)
+            
+            attentions = torch.mean(attentions, dim=1, keepdim=True)
+            # attentions = torch.max(attentions, dim=1, keepdim=True)[0]
+                        
+            cls_attentions = attentions[:, :, 0, 1:]
+            patch_attentions = attentions[:, :, 1:, 1:]
+            
+            cls_attn_maps = cls_attentions.unsqueeze(dim=2).reshape(bs, 1, 60, 60)
+            
+            cams = cls_attn_maps * features
+            
+            ref_fusion_maps = torch.matmul(patch_attentions, cams.reshape(bs, features.shape[1], -1, 1)).reshape(bs, features.shape[1], 60, 60)
+            features = ref_fusion_maps.reshape(bs, -1, 3600).permute(0,2,1)
+            
+            bs = attentions.shape[0]
+            nh = attentions.shape[1] # number of head
+            
+            # we keep only the output patch attention
+            # attentions = attentions[:, :, 0, 1:].reshape(bs, nh, -1)
+            
+            ## self-attention map
+            idx_attentions = torch.argmax(cls_attentions, dim=-1)
+            temp_attentions = []
+            for i_bs in range(bs):
+                for i_head in range(nh):
+                    temp_attentions.append(patch_attentions[i_bs, i_head, idx_attentions[i_bs, i_head], :])
+            attentions = torch.stack(temp_attentions).reshape(bs, nh, -1)
+            
+            ## patch_attn (matmul) cls_attn
+            # attentions = torch.matmul(patch_attentions, cls_attentions.unsqueeze(-1)).squeeze(-1)
+            
+            '''
+                Decoding
+            '''
+            # features, attentions = self.dino_decoder(features, attentions)
+            # ## Select max attention
+            attn_max = torch.max(attentions, dim=-1)[0]
+            max_idx = torch.max(attn_max, dim=-1)[1]
+            temp_attentions = []
+            for i_bs in range(bs):
+                temp_attentions.append(attentions[i_bs, max_idx[i_bs], ...])
+            attentions = torch.stack(temp_attentions).reshape(bs, 1, -1)
+            # ## Mean attentions
+            # # attentions = attentions.mean(dim=1).reshape(bs, 1, -1)
+            # nh = 1
+            
+            attentions = cls_attentions * attentions
+            # attentions = attentions * (1-th_attn_imgs.reshape(bs,1,3600))
+
             if i == num_iter - 1:
                 remains -= th_attn_sum
                 th_attn = remains.repeat([1,nh,1])
                 assert remains.min() >= 0
-                
-                # th_attn = th_attn.reshape(nh, w_featmap, h_featmap).float()
-                # # interpolate
-                # th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()                
             else:
                 remains -= th_attn_sum
                 # we keep only a certain percentage of the mass
@@ -293,50 +421,36 @@ if __name__ == '__main__':
                 th_attn = cumval > (1 - args.threshold)
                 idx2 = torch.argsort(idx, dim=2)
                 # for head in range(nh):
-                #     th_attn[head] = th_attn[head][idx2[head]]
-                th_attn = torch.gather(th_attn, 2, idx2).float()                
-                
+                    # th_attn[:,head] = th_attn[:,head][idx2[head]]
+                th_attn = torch.gather(th_attn, 2, idx2).float()
+                # Eliminate elements chosen before
                 th_attn = th_attn * remains
             th_attn_sum = th_attn.sum(dim=1).unsqueeze(dim=1)
             
             th_attn_sum = torch.where(th_attn_sum==0, th_attn_sum, torch.tensor([1.],device=device))
             th_attn_imgs = th_attn_sum.reshape(bs, 1, w_featmap, h_featmap)
-            th_attn_imgs = nn.functional.interpolate(th_attn_imgs, scale_factor=args.patch_size, mode="nearest")
+            th_attn_imgs_orig = nn.functional.interpolate(th_attn_imgs, scale_factor=args.patch_size, mode="nearest")
             
-            next_img = img * (1-th_attn_imgs.cpu())
-            
+            next_img = img * (1-th_attn_imgs_orig.cpu())
+                
             th_attn = th_attn.reshape(nh, w_featmap, h_featmap).float()
             # interpolate
             th_attn = nn.functional.interpolate(th_attn.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
-            
-        attentions = attentions.reshape(nh, w_featmap, h_featmap)
-        attentions = nn.functional.interpolate(attentions.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
-
-        ## CLIP part
-        # clip_img = img * th_attn
-        # clip_img = nn.functional.interpolate(clip_img.to(device), (224,224))
-        # image_features = clip_model.encode_image(clip_img)
-        # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        # logit_scale = clip_model.logit_scale.exp()
-        
-        # cls_score = logit_scale * image_features @ features_test.clone().detach().t().half()
-        # print("image"+str(i+1)+": ", class_texts[cls_score.argmax()])
-    
-        # img = img * (1 - th_attn)
-        
-            
-        # save attentions heatmaps
-        os.makedirs(args.output_dir, exist_ok=True)
-        torchvision.utils.save_image(torchvision.utils.make_grid(img, normalize=True, scale_each=True), os.path.join(args.output_dir, "img"+"_iter"+str(i)+".png"))
-        for j in range(nh):
-            fname = os.path.join(args.output_dir, "attn-head" + str(j) + "_iter" + str(i) + ".png")
-            plt.imsave(fname=fname, arr=attentions[j], format='png')
-            print(f"{fname} saved.")
-
-        if args.threshold is not None:
-            image = skimage.io.imread(os.path.join(args.output_dir, "img"+"_iter"+str(i)+".png"))
+                
+            attentions = attentions.reshape(nh, w_featmap, h_featmap)
+            attentions = nn.functional.interpolate(attentions.unsqueeze(0), scale_factor=args.patch_size, mode="nearest")[0].cpu().numpy()
+                
+            # save attentions heatmaps
+            os.makedirs(args.output_dir, exist_ok=True)
+            torchvision.utils.save_image(torchvision.utils.make_grid(img, normalize=True, scale_each=True), os.path.join(args.output_dir, "img"+"_iter"+str(i)+".png"))
             for j in range(nh):
-                display_instances(image, th_attn[j], fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) + "_iter"+str(i)+".png"), blur=False)
-        
-        img = next_img
-        
+                fname = os.path.join(args.output_dir, "attn-head" + str(j) + "_iter" + str(i) + ".png")
+                plt.imsave(fname=fname, arr=attentions[j], format='png')
+                # print(f"{fname} saved.")
+
+            if args.threshold is not None:
+                image = skimage.io.imread(os.path.join(args.output_dir, "img"+"_iter"+str(i)+".png"))
+                for j in range(nh):
+                    display_instances(image, th_attn[j], fname=os.path.join(args.output_dir, "mask_th" + str(args.threshold) + "_head" + str(j) + "_iter"+str(i)+".png"), blur=False)
+                        
+            img = next_img

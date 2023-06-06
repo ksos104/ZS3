@@ -7,8 +7,16 @@
 #SBATCH -e logs/stderr_%j.txt
 #SBATCH --gres=gpu:4
 
+
+# CUDA_VISIBLE_DEVICES=4,5,6,7
+# python train_net.py \
+#   --config-file configs/pascal_voc/dino_clip_bs32_10k_vit_small_voc.yaml \
+#   --num-gpus 4 SOLVER.IMS_PER_BATCH 32 OUTPUT_DIR ./output_dino_vit_small_voc32_self_attn_dec_nh1_noAttnConv_clsSelf_th3\
+#   DINO.THRESHOLD 0.3 DINO.NUM_ITER 10
+
+
 CUDA_VISIBLE_DEVICES=0,1,2,3
 python train_net.py \
-  --config-file configs/pascal_voc/dino_clip_bs32_10k_vit_small_voc.yaml \
-  --num-gpus 4 SOLVER.IMS_PER_BATCH 32 OUTPUT_DIR ./output_dino_vit_small_voc32_self_attn_dec_nh1_noAttnConv_mean \
+  --config-file configs/pascal_voc/tokencut_clip_bs32_10k_vit_small_voc.yaml \
+  --num-gpus 4 SOLVER.IMS_PER_BATCH 24 OUTPUT_DIR ./output_tokencut_vit_small_voc32\
   DINO.THRESHOLD 0.3 DINO.NUM_ITER 10

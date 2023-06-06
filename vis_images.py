@@ -13,8 +13,11 @@ root_list = [
     # 'results_vis_dino_vit_small_matcher_sum_norm',
     # 'results_vis_dino_vit_small_self_attn',
     # 'results_vis_dino_vit_small_self_attn',
-    'results_vis_dino_vit_small_self_attn_dec_nh1_sm',
-    'results_vis_dino_vit_small_self_attn_dec_nh1_noAttnConv'
+    # 'results_vis_dino_vit_small_self_attn_dec_nh1_sm',
+    # 'results_vis_dino_vit_small_self_attn_dec_nh1_noAttnConv',
+    # 'results_vis_dino_vit_small_self_attn_dec_nh1_noAttnConv_clsSelf_th3',
+    # 'results_vis_dino_vit_small_self_attn_dec_nh1_noAttnConv_clsSelf_th5',
+    'results_vis_tokencut_vit_small_voc32'
 ]
 
 save_path = 'vis_comparison'

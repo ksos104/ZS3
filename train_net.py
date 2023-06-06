@@ -233,15 +233,20 @@ class SemSegGzeroEvaluator(DatasetEvaluator):
         return json_list
 
 
-# MaskFormer
-from dino_clip import (
+# from dino_clip import (
+#     DETRPanopticDatasetMapper,
+#     MaskFormerPanopticDatasetMapper,
+#     MaskFormerSemanticDatasetMapper,
+#     SemanticSegmentorWithTTA,
+#     add_mask_former_config,
+# )
+from tokencut_clip import (
     DETRPanopticDatasetMapper,
     MaskFormerPanopticDatasetMapper,
     MaskFormerSemanticDatasetMapper,
     SemanticSegmentorWithTTA,
     add_mask_former_config,
 )
-
 
 class Trainer(DefaultTrainer):
     """
