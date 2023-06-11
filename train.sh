@@ -18,5 +18,5 @@
 CUDA_VISIBLE_DEVICES=0,1,2,3
 python train_net.py \
   --config-file configs/pascal_voc/tokencut_clip_bs32_10k_vit_small_voc.yaml \
-  --num-gpus 4 SOLVER.IMS_PER_BATCH 24 OUTPUT_DIR ./output_tokencut_vit_small_voc32\
+  --num-gpus 4 SOLVER.IMS_PER_BATCH 12 OUTPUT_DIR ./output_tokencut_vit_small_voc32_origFeatures_decAttentions_concat\
   DINO.THRESHOLD 0.3 DINO.NUM_ITER 10

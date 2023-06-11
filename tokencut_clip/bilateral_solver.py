@@ -54,8 +54,8 @@ class BilateralGrid(object):
         # Compute 5-dimensional XYLUV bilateral-space coordinates
         Iy, Ix = torch.meshgrid(torch.arange(im.shape[1]), torch.arange(im.shape[2]))
         Ix, Iy = Ix.to(im.device), Iy.to(self.device)
-        Ix = Ix.expand([im.shape[0], im.shape[1], im.shape[2]])
-        Iy = Iy.expand([im.shape[0], im.shape[1], im.shape[2]])
+        Ix = Ix.expand([self.bs, im.shape[1], im.shape[2]])
+        Iy = Iy.expand([self.bs, im.shape[1], im.shape[2]])
         x_coords = (Ix / sigma_spatial).int()
         y_coords = (Iy / sigma_spatial).int()
         luma_coords = (im_yuv[..., 0] /sigma_luma).int()
@@ -109,10 +109,12 @@ class BilateralGrid(object):
         
     def _hash_coords(self, coord):
         """Hacky function to turn a coordinate into a unique value"""
-        return torch.matmul(coord.float(), self.hash_vec)
+        # return torch.matmul(coord.float(), self.hash_vec)
+        return torch.matmul(coord.to(torch.float64), self.hash_vec.to(torch.float64))
 
     def splat(self, x):
         return torch.matmul(self.S, x.float())
+        # return torch.matmul(self.S, x)
     
     def slice(self, y):
         # return torch.matmul(self.S.T, torch.tensor(y).to(self.S.device))
@@ -251,12 +253,7 @@ class BilateralSolver(object):
         y0 = self.grid.splat(xw) / w_splat
         yhat = torch.empty_like(y0) 
         assert x.shape[-1] == 1       
-        for d in range(x.shape[-1]):
-            yhat_list = []
-            for i in range(self.grid.bs):
-                yhat[i, ..., d] = conjugate_gradient(A[i, ...], b[i, ..., d], x0=y0[i, ..., d], M=M[i, ...], maxiter=self.params["cg_maxiter"], tol=self.params["cg_tol"])
-                yhat_list.append(yhat[i, ...])
-            yhat = torch.stack(yhat_list)
+        yhat = torch.linalg.solve(A, b)
         xhat = self.grid.slice(yhat)
         
         import math

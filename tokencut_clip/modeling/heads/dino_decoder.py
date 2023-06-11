@@ -50,12 +50,7 @@ class DINODecoder(nn.Module):
         '''
         super().__init__()
         
-        # self.in_features = ['features']
-        # feature_channels = [384]
         self.n_layers = 4
-        # self.n_heads = 6
-        # self.n_heads_list = [6, 6, 6, 1, 1]
-        # self.n_heads_list = [6, 6, 6, 6, 6]
         self.n_heads_list = [1, 1, 1, 1, 1]
         self.conv_dim = 384
 
@@ -72,6 +67,7 @@ class DINODecoder(nn.Module):
             )
             feature_conv = Conv2d(
                 self.conv_dim+self.n_heads_list[idx],
+                # self.conv_dim,
                 self.conv_dim,
                 kernel_size=3,
                 stride=1,
@@ -123,17 +119,11 @@ class DINODecoder(nn.Module):
         
         for idx in range(self.n_layers):
             features = torch.cat((features, attentions), dim=1)
-            
+            # features = features + attentions
             features = self.feature_convs[idx](features)
-            # attentions = self.attn_convs[idx](attentions)
-            
-            # attentions = attentions.reshape(bs, self.n_heads_list[idx+1], -1)
-            # attentions = attentions.softmax(dim=-1)
-            # attentions = attentions.reshape(bs, self.n_heads_list[idx+1], 60, 60)
             
         features = features.reshape(bs, self.conv_dim, 3600).permute(0,2,1)
         attentions = attentions.reshape(bs, self.n_heads_list[-1], 3600)
-        # attentions = attentions.softmax(dim=-1)
         
         return features, attentions
 

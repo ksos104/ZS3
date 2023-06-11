@@ -99,7 +99,7 @@ def get_tokencut_binary_map(input_images, backbone, patch_size, tau) :
 
     # tensor = ToTensor(I_resize).unsqueeze(0).cuda()
     # feat = backbone(tensor)[0]
-    bs, h, w = input_images.shape[0], input_images.shape[-1], input_images.shape[-2]
+    bs, h, w = input_images.shape[0], input_images.shape[-2], input_images.shape[-1]
     feat_h = h // patch_size
     feat_w = w // patch_size
     outputs, feat = backbone(input_images)
@@ -143,7 +143,7 @@ parser.add_argument('--vit-arch', type=str, default='small', choices=['base', 's
 
 parser.add_argument('--vit-feat', type=str, default='k', choices=['k', 'q', 'v', 'kqv'], help='which features')
 
-parser.add_argument('--patch-size', type=int, default=8, choices=[16, 8], help='patch size')
+parser.add_argument('--patch-size', type=int, default=16, choices=[16, 8], help='patch size')
 
 parser.add_argument('--tau', type=float, default=0.2, help='Tau for tresholding graph')
 
@@ -227,7 +227,7 @@ mask_lost = []
 mask_bfs = []
 gt = []
 
-n_iter = 10
+n_iter = 2
 image_size = (480,480)
 unorm = UnNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
 
@@ -240,9 +240,12 @@ for img_name in tqdm(img_list) :
         img_pth = os.path.join(args.img_dir, img_name)
         
     img = Image.open(args.img_path).convert('RGB')
+    
+    ref_img = torch.from_numpy(np.array(img)).float().cuda()
+    ref_img = ref_img.permute(2,0,1).unsqueeze(0)
         
     transform = transforms.Compose([
-        transforms.Resize(image_size),
+        # transforms.Resize(image_size),
         transforms.ToTensor(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
@@ -251,7 +254,7 @@ for img_name in tqdm(img_list) :
     orig_img = img.clone()
         
     bs = img.shape[0]
-    remains = torch.ones((bs, image_size[0],image_size[1])).to(img.device)
+    remains = torch.ones((bs, img.shape[-2],img.shape[-1])).to(img.device)
     
     for i in range(n_iter):
         bipartition, eigvec = get_tokencut_binary_map(img, backbone, args.patch_size, args.tau)
@@ -259,7 +262,7 @@ for img_name in tqdm(img_list) :
 
         bipartition = bipartition * remains
 
-        output_solver, binary_solver = bilateral_solver.bilateral_solver_output(img, bipartition, sigma_spatial = args.sigma_spatial, sigma_luma = args.sigma_luma, sigma_chroma = args.sigma_chroma)
+        output_solver, binary_solver = bilateral_solver.bilateral_solver_output(ref_img, bipartition, sigma_spatial = args.sigma_spatial, sigma_luma = args.sigma_luma, sigma_chroma = args.sigma_chroma)
                
         mask1 = bipartition
         mask2 = binary_solver

@@ -415,7 +415,7 @@ class TOKENCUT_CLIP(nn.Module):
 
         # tensor = ToTensor(I_resize).unsqueeze(0).cuda()
         # feat = backbone(tensor)[0]
-        bs, h, w = input_images.shape[0], input_images.shape[-1], input_images.shape[-2]
+        bs, h, w = input_images.shape[0], input_images.shape[-2], input_images.shape[-1]
         feat_h = h // patch_size
         feat_w = w // patch_size
         outputs, feat = backbone(input_images)
@@ -498,6 +498,11 @@ class TOKENCUT_CLIP(nn.Module):
         remains = torch.ones((bs,self.image_size[0],self.image_size[1])).to(self.device)
         for i in range(self.n_iter):       
             features, bipartition, eigvec = self.get_tokencut_binary_map(input_images, self.model, self.patch_size, self.tau)
+            
+            if i == 0:
+                orig_features = features
+            else:
+                features = orig_features
 
             bipartition = bipartition * remains
 
@@ -521,14 +526,15 @@ class TOKENCUT_CLIP(nn.Module):
                 binary_solver = F.interpolate((binary_solver*1.).unsqueeze(0).unsqueeze(0), size=(h_featmap,w_featmap), mode='nearest')
             else:
                 binary_solver = F.interpolate((binary_solver*1.).unsqueeze(1), size=(h_featmap,w_featmap), mode='nearest')
-                        
+            
             features = features[:,1:,:].to(torch.float)
             attentions = output_solver.to(torch.float)
             
             '''
                 Decoding
             '''
-            features, attentions = self.dino_decoder(features, attentions)
+            dec_attentions = binary_solver * attentions
+            features, dec_attentions = self.dino_decoder(features, dec_attentions)
 
             features_list.append(features)
             attentions_list.append(attentions)
@@ -536,13 +542,14 @@ class TOKENCUT_CLIP(nn.Module):
 
             input_images = input_images * remains.to(torch.float).unsqueeze(dim=1)
             
-            masked_features = ((binary_solver.reshape(bs,nh,-1).to(torch.float) * attentions).unsqueeze(dim=-1) + features.unsqueeze(dim=1).repeat([1,nh,1,1]))
+            # masked_features = ((binary_solver.reshape(bs,nh,-1).to(torch.float) * attentions).unsqueeze(dim=-1) + features.unsqueeze(dim=1).repeat([1,nh,1,1]))
+            masked_features = features
             mask_output = self.head(masked_features)
             mask_output_list.append(mask_output)
         
         binary_attns = torch.concat(binary_attn_list, dim=1).unsqueeze(dim=-1)
         features_tensor = torch.stack(features_list, dim=1)
-        mask_outputs = torch.concat(mask_output_list, dim=1)
+        mask_outputs = torch.stack(mask_output_list, dim=1)
         attentions = torch.concat(attentions_list, dim=1).unsqueeze(dim=-1)
         
         ## Attentions refinement
@@ -567,7 +574,8 @@ class TOKENCUT_CLIP(nn.Module):
             outputs = {}
         # outputs['semantic_vector'] = mask_outputs
                     
-        mask_inputs = (features_tensor.repeat([1,nh,1,1]) + (binary_attns.reshape(bs,self.n_iter,-1,1).to(torch.float) * attentions)).contiguous().view(bs, -1, 384)
+        # mask_inputs = (features_tensor.repeat([1,nh,1,1]) + (binary_attns.reshape(bs,self.n_iter,-1,1).to(torch.float) * attentions)).contiguous().view(bs, -1, 384)
+        mask_inputs = features_tensor
         mask_inputs = self.mask_layers(mask_inputs)
         
         pred_masks = mask_inputs.contiguous().view(bs, self.n_iter*nh, w_featmap, h_featmap)
