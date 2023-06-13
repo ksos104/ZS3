@@ -143,7 +143,7 @@ parser.add_argument('--vit-arch', type=str, default='small', choices=['base', 's
 
 parser.add_argument('--vit-feat', type=str, default='k', choices=['k', 'q', 'v', 'kqv'], help='which features')
 
-parser.add_argument('--patch-size', type=int, default=16, choices=[16, 8], help='patch size')
+parser.add_argument('--patch-size', type=int, default=8, choices=[16, 8], help='patch size')
 
 parser.add_argument('--tau', type=float, default=0.2, help='Tau for tresholding graph')
 
@@ -227,7 +227,7 @@ mask_lost = []
 mask_bfs = []
 gt = []
 
-n_iter = 2
+n_iter = 10
 image_size = (480,480)
 unorm = UnNormalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
 
@@ -241,11 +241,12 @@ for img_name in tqdm(img_list) :
         
     img = Image.open(args.img_path).convert('RGB')
     
-    ref_img = torch.from_numpy(np.array(img)).float().cuda()
+    ref_img = transforms.Resize(image_size)(img)
+    ref_img = torch.from_numpy(np.array(ref_img)).float().cuda()
     ref_img = ref_img.permute(2,0,1).unsqueeze(0)
         
     transform = transforms.Compose([
-        # transforms.Resize(image_size),
+        transforms.Resize(image_size),
         transforms.ToTensor(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])

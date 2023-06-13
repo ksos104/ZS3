@@ -33,7 +33,7 @@ from tokencut_clip import metric
 
 
 @META_ARCH_REGISTRY.register()
-class TOKENCUT_CLIP(nn.Module):
+class TOKENCUT_CLIP2(nn.Module):
     """
     Main class for mask classification semantic segmentation architectures.
     """
@@ -198,11 +198,16 @@ class TOKENCUT_CLIP(nn.Module):
         self.model.to(device)
 
         self.input_dim = feat_dim
+        # if self.mode == 'decoder':
+        #     self.head = nn.Linear(self.input_dim, 512)
+        #     self.mask_layers = nn.Linear(self.input_dim, 1)
+        # elif self.mode == 'ref_fusion':
+        #     self.cam_head = nn.Conv2d(self.input_dim, self.input_dim, kernel_size=3, stride=1, padding=1)
         
-        # self.head = nn.Linear(self.input_dim, 512)
-        self.head = nn.Conv2d(self.input_dim, 512, kernel_size=1)
-        # self.mask_layers = nn.Linear(self.input_dim, 1)
-        self.mask_layers = nn.Conv2d(self.input_dim, 1, kernel_size=1)
+        self.head = nn.Linear(self.input_dim, 512)
+        # self.head = nn.Conv2d(self.input_dim, 512, kernel_size=3, stride=1, padding=1)
+        self.mask_layers = nn.Linear(self.input_dim, 1)
+        self.cam_head = nn.Conv2d(self.input_dim, self.input_dim, kernel_size=3, stride=1, padding=1)
         
         ## DINO decoder
         self.dino_decoder = DINODecoder(
@@ -526,6 +531,13 @@ class TOKENCUT_CLIP(nn.Module):
             attentions = output_solver.to(torch.float)
             
             '''
+            
+                TODO: CLIP image encoder 추가
+            
+            '''
+            
+            
+            '''
                 Decoding
             '''
             dec_attentions = binary_solver * attentions
@@ -538,8 +550,8 @@ class TOKENCUT_CLIP(nn.Module):
             input_images = input_images * remains.to(torch.float).unsqueeze(dim=1)
             
             # masked_features = ((binary_solver.reshape(bs,nh,-1).to(torch.float) * attentions).unsqueeze(dim=-1) + features.unsqueeze(dim=1).repeat([1,nh,1,1]))
-            masked_features = features.permute(0,2,1).reshape(bs, self.input_dim, 60, 60)
-            mask_output = self.head(masked_features).reshape(bs, -1, 3600).permute(0, 2, 1)
+            masked_features = features
+            mask_output = self.head(masked_features)
             mask_output_list.append(mask_output)
         
         binary_attns = torch.concat(binary_attn_list, dim=1).unsqueeze(dim=-1)
@@ -570,8 +582,8 @@ class TOKENCUT_CLIP(nn.Module):
         # outputs['semantic_vector'] = mask_outputs
                     
         # mask_inputs = (features_tensor.repeat([1,nh,1,1]) + (binary_attns.reshape(bs,self.n_iter,-1,1).to(torch.float) * attentions)).contiguous().view(bs, -1, 384)
-        mask_inputs = features_tensor.permute(0,1,3,2).reshape(bs*self.n_iter, self.input_dim, 60, 60)
-        mask_inputs = self.mask_layers(mask_inputs).reshape(bs, self.n_iter, 1, 3600).permute(0,1,3,2)
+        mask_inputs = features_tensor
+        mask_inputs = self.mask_layers(mask_inputs)
         
         pred_masks = mask_inputs.contiguous().view(bs, self.n_iter*nh, w_featmap, h_featmap)
         outputs['pred_masks'] = pred_masks

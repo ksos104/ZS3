@@ -65,7 +65,8 @@ class BilateralGrid(object):
         _, self.npixels, self.dim = coords_flat.shape
         # Hacky "hash vector" for coordinates,
         # Requires all scaled coordinates be < MAX_VAL
-        self.hash_vec = (MAX_VAL**torch.arange(self.dim).to(self.device))
+        # self.hash_vec = (MAX_VAL**torch.arange(self.dim).to(self.device))
+        self.hash_vec = ((MAX_VAL//4)**torch.arange(self.dim).to(self.device))
         # Construct S and B matrix
         self._compute_factorization(coords_flat)
         
@@ -109,8 +110,8 @@ class BilateralGrid(object):
         
     def _hash_coords(self, coord):
         """Hacky function to turn a coordinate into a unique value"""
-        # return torch.matmul(coord.float(), self.hash_vec)
-        return torch.matmul(coord.to(torch.float64), self.hash_vec.to(torch.float64))
+        return torch.matmul(coord.float(), self.hash_vec)
+        # return torch.matmul(coord.to(torch.float64), self.hash_vec.to(torch.float64))
 
     def splat(self, x):
         return torch.matmul(self.S, x.float())
@@ -139,81 +140,6 @@ class BilateralGrid(object):
         """Apply bilateral filter to an input x"""
         return self.slice(self.blur(self.splat(x))) /  \
                self.slice(self.blur(self.splat(cp.ones_like(x))))
-    
-'''
-    NumPy functions to PyTorch functions
-'''
-def conjugate_gradient(A, b, x0=None, M=None, maxiter=25, tol=1e-5):
-    # # Set initial guess
-    # if x0 is None:
-    #     x0 = torch.zeros_like(b)
-
-    # # Set preconditioner (identity if not provided)
-    # if M is None:
-    #     M = torch.eye(A.size(0), device=A.device)
-
-    # # Initialize variables
-    # x = x0
-    # r = b - torch.matmul(A, x.unsqueeze(-1)).squeeze(-1)
-    # z = torch.matmul(M, r.unsqueeze(-1)).squeeze(-1)
-    # p = z
-    # rz = torch.sum(r * z)
-    # residual_norm = torch.norm(r)
-
-    # # Iterate until convergence or maximum iterations reached
-    # iter_count = 0
-    # while iter_count < maxiter and residual_norm > tol:
-    #     Ap = torch.matmul(A, p.unsqueeze(-1)).squeeze(-1)
-    #     pAp_sum = torch.sum(p * Ap)
-    #     if pAp_sum == 0:
-    #         alpha = 0.
-    #     else:
-    #         alpha = rz / pAp_sum
-    #     x += alpha * p
-    #     r -= alpha * Ap
-    #     z = torch.matmul(M, r.unsqueeze(-1)).squeeze(-1)
-    #     rz_new = torch.sum(r * z)
-    #     beta = rz_new / rz
-    #     p = z + beta * p
-    #     rz = rz_new
-    #     residual_norm = torch.norm(r)
-    #     iter_count += 1
-        
-    if x0 is None:
-        x0 = torch.zeros_like(b)
-    r = b - torch.matmul(A, x0.unsqueeze(-1)).squeeze(-1)
-    p = r.clone()
-    rsold = torch.sum(r * r, dim=-1, keepdim=True)
-    if M is None:
-        M = torch.eye(b.size(-1)).unsqueeze(0).expand_as(b)
-    z = torch.matmul(M, r.unsqueeze(-1)).squeeze(-1)
-    rzold = torch.sum(r * z, dim=-1, keepdim=True)
-    for i in range(maxiter):
-        Ap = torch.matmul(A, p.unsqueeze(-1)).squeeze(-1)
-        
-        pAp_sum = torch.sum(p * Ap)
-        if pAp_sum == 0.:
-            alpha = 0.
-        else:
-            alpha = rzold / pAp_sum
-        x = x0 + alpha * p
-        r = r - alpha * Ap
-        z = torch.matmul(M, r.unsqueeze(-1)).squeeze(-1)
-        rznew = torch.sum(r * z, dim=-1, keepdim=True)
-        beta = rznew / rzold
-        p = z + beta * p
-        rsnew = torch.sum(r * r, dim=-1, keepdim=True)
-        if rsnew.sqrt() < tol:
-            break
-        rsold = rsnew
-        rzold = rznew
-
-    return x
-
-'''
-    END
-'''
-
 
 def bistochastize(grid, maxiter=10):
     """Compute diagonal matrices to bistochastize a bilateral grid"""
@@ -259,7 +185,6 @@ class BilateralSolver(object):
         import math
         if math.isnan(xhat.sum()):
             print("NaN")
-            temp = conjugate_gradient(A, b[..., d], x0=y0[..., d], M=M, maxiter=self.params["cg_maxiter"], tol=self.params["cg_tol"])
         
         return xhat
 
